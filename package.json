@@ -1,0 +1,24 @@
+{
+  "name": "dbexplorer-documentation",
+  "version": "1.0.0",
+  "description": "Application de gestion et documentation de bases de données",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm start",
+    "build": "cd client && npm run build",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "start": "cd server && npm start",
+    "test": "node tests/test-enabled-connections.js",
+    "clean": "npm run clean-deps && npm run clean-build",
+    "clean-deps": "rimraf node_modules */node_modules",
+    "clean-build": "rimraf build dist"
+  },
+  "keywords": ["database", "documentation", "sql", "mysql", "mariadb", "sqlserver"],
+  "author": "DB Administrator",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+} 
