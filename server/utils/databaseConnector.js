@@ -1,6 +1,10 @@
 const sql = require('mssql');
 const mysql = require('mysql2');
 const { Client } = require('ssh2');
+const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
+const dbPath = path.join(__dirname, '../database/dbexplorer.sqlite');
+const db = new sqlite3.Database(dbPath);
 
 // Fonction pour détecter et nettoyer le format de clé SSH
 function normalizeSSHKey(privateKey) {
@@ -29,6 +33,32 @@ function normalizeSSHKey(privateKey) {
     // Format non reconnu
     throw new Error('Format de clé SSH non reconnu. Formats supportés : OpenSSH (.pem), DSA, EC');
   }
+}
+
+function getActiveConnectionsSync() {
+  // Cette fonction retourne un tableau synchronisé des connexions activées (pour usage interne rapide)
+  // Pour la route, il vaut mieux utiliser une version async, mais ici on fait simple
+  let rows = [];
+  db.all('SELECT * FROM connections WHERE enabled = 1', (err, result) => {
+    if (!err && result) rows = result.map(row => ({
+      ...row,
+      enabled: Boolean(row.enabled),
+      ssh_enabled: Boolean(row.ssh_enabled)
+    }));
+  });
+  return rows;
+}
+
+function getActiveConnections(callback) {
+  db.all('SELECT * FROM connections WHERE enabled = 1', (err, rows) => {
+    if (err) return callback(err);
+    const connections = rows.map(row => ({
+      ...row,
+      enabled: Boolean(row.enabled),
+      ssh_enabled: Boolean(row.ssh_enabled)
+    }));
+    callback(null, connections);
+  });
 }
 
 // Pool de connexions SSH/MySQL
@@ -266,6 +296,7 @@ class ConnectionPool {
 // Instance globale du pool
 const connectionPool = new ConnectionPool();
 
+// Classe principale DatabaseConnector
 class DatabaseConnector {
   constructor() {
     this.connections = new Map();
@@ -297,7 +328,7 @@ class DatabaseConnector {
     };
 
     try {
-      const pool = await sql.connect(connectionString);
+      const pool = await new sql.ConnectionPool(connectionString).connect();
       return pool;
     } catch (error) {
       throw new Error(`Erreur de connexion SQL Server: ${error.message}`);
@@ -358,11 +389,22 @@ class DatabaseConnector {
   async getDatabases(config) {
     let connection;
     try {
+      console.log('getDatabases - Début avec config:', {
+        type: config.type,
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        database: config.database,
+        ssh_enabled: config.ssh_enabled
+      });
+      
       let databases = [];
       
       switch (config.type) {
         case 'sqlserver':
+          console.log('getDatabases - Tentative de connexion SQL Server');
           connection = await this.connectSQLServer(config);
+          console.log('getDatabases - Connexion SQL Server établie');
           const result = await connection.request().query(`
             SELECT name FROM sys.databases 
             WHERE database_id > 4 
@@ -372,10 +414,13 @@ class DatabaseConnector {
           break;
         case 'mysql':
         case 'mariadb':
+          console.log('getDatabases - Tentative de connexion MySQL/MariaDB');
           connection = await this.connectMySQL(config);
+          console.log('getDatabases - Connexion MySQL/MariaDB établie');
           const [rows] = await new Promise((resolve, reject) => {
             connection.query('SHOW DATABASES', (err, results) => {
               if (err) {
+                console.error('getDatabases - Erreur MySQL/MariaDB:', err);
                 reject(err);
               } else {
                 resolve([results]);
@@ -388,8 +433,11 @@ class DatabaseConnector {
           break;
       }
 
+      console.log('getDatabases - Bases trouvées:', databases);
       return databases;
     } catch (error) {
+      console.error('getDatabases - Erreur détaillée:', error);
+      console.error('getDatabases - Stack trace:', error.stack);
       throw new Error(`Erreur lors de la récupération des bases de données: ${error.message}`);
     } finally {
       if (connection) {
@@ -401,7 +449,7 @@ class DatabaseConnector {
             connectionPool.releaseConnection(config, connection);
           }
         } catch (e) {
-          // Ignore l'erreur si la connexion est déjà fermée
+          console.error('getDatabases - Erreur lors de la fermeture de la connexion:', e);
         }
       }
     }
@@ -727,7 +775,7 @@ class DatabaseConnector {
             }
           };
           
-          connection = await sql.connect(connectionString);
+          connection = await new sql.ConnectionPool(connectionString).connect();
           
           switch (objectType) {
             case 'TABLE':
@@ -756,10 +804,13 @@ class DatabaseConnector {
                   ).value('.', 'NVARCHAR(MAX)'), 1, 6, '') + CHAR(13) + CHAR(10) + ')' as ddl
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-                WHERE t.name = '${objectName}' AND s.name = '${schemaName}'
+                WHERE t.name = @objectName AND s.name = @schemaName
               `;
               console.log('Requête TABLE:', tableQuery);
-              const tableResult = await connection.request().query(tableQuery);
+              const tableResult = await connection.request()
+                .input('objectName', sql.NVarChar, objectName)
+                .input('schemaName', sql.NVarChar, schemaName)
+                .query(tableQuery);
               console.log('Résultat TABLE:', tableResult.recordset);
               ddl = tableResult.recordset[0]?.ddl || 'DDL non disponible';
               break;
@@ -773,26 +824,29 @@ class DatabaseConnector {
                   SELECT OBJECT_DEFINITION(v.object_id) as ddl
                   FROM sys.views v
                   INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
-                  WHERE v.name = '${objectName}' AND s.name = '${schemaName}'
+                  WHERE v.name = @objectName AND s.name = @schemaName
                 `;
               } else if (objectType === 'PROCEDURE') {
                 objectQuery = `
                   SELECT OBJECT_DEFINITION(p.object_id) as ddl
                   FROM sys.procedures p
                   INNER JOIN sys.schemas s ON p.schema_id = s.schema_id
-                  WHERE p.name = '${objectName}' AND s.name = '${schemaName}'
+                  WHERE p.name = @objectName AND s.name = @schemaName
                 `;
               } else if (objectType === 'FUNCTION') {
                 objectQuery = `
                   SELECT OBJECT_DEFINITION(f.object_id) as ddl
                   FROM sys.objects f
                   INNER JOIN sys.schemas s ON f.schema_id = s.schema_id
-                  WHERE f.name = '${objectName}' AND s.name = '${schemaName}' AND f.type IN ('FN', 'IF', 'TF')
+                  WHERE f.name = @objectName AND s.name = @schemaName AND f.type IN ('FN', 'IF', 'TF')
                 `;
               }
               
               console.log('Requête', objectType, ':', objectQuery);
-              const objectResult = await connection.request().query(objectQuery);
+              const objectResult = await connection.request()
+                .input('objectName', sql.NVarChar, objectName)
+                .input('schemaName', sql.NVarChar, schemaName)
+                .query(objectQuery);
               console.log('Résultat', objectType, ':', objectResult.recordset);
               ddl = objectResult.recordset[0]?.ddl || 'DDL non disponible';
               break;
@@ -1371,6 +1425,56 @@ class DatabaseConnector {
       }
     }
   }
+
+  // Exécuter une requête générique
+  async executeQuery(config, query, params = []) {
+    let connection;
+    try {
+      switch (config.type) {
+        case 'sqlserver':
+          connection = await this.connectSQLServer(config);
+          const result = await connection.request().query(query);
+          return result.recordset;
+          
+        case 'mysql':
+        case 'mariadb':
+          connection = await this.connectMySQL(config);
+          const [rows] = await new Promise((resolve, reject) => {
+            connection.query(query, params, (err, results) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve([results]);
+              }
+            });
+          });
+          return rows;
+          
+        default:
+          throw new Error(`Type de base de données ${config.type} non supporté`);
+      }
+    } catch (error) {
+      throw new Error(`Erreur lors de l'exécution de la requête: ${error.message}`);
+    } finally {
+      if (connection) {
+        try {
+          if (config.type === 'sqlserver') {
+            await connection.close();
+          } else {
+            // Libérer la connexion dans le pool au lieu de la fermer
+            connectionPool.releaseConnection(config, connection);
+          }
+        } catch (e) {
+          // Ignore l'erreur si la connexion est déjà fermée
+        }
+      }
+    }
+  }
 }
 
-module.exports = new DatabaseConnector(); 
+// Exporter un objet avec toutes les fonctions nécessaires
+module.exports = {
+  getActiveConnections,
+  getActiveConnectionsSync,
+  DatabaseConnector: DatabaseConnector
+}; 

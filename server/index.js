@@ -15,6 +15,10 @@ app.use('/api/connections', require('./routes/connections'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/comments', require('./routes/comments'));
 app.use('/api/databases', require('./routes/databases'));
+app.use('/api/maintenance', require('./routes/maintenance'));
+app.use('/api/performance', require('./routes/performance'));
+app.use('/api/analysis', require('./routes/analysis'));
+app.use('/api/jobs', require('./routes/jobs'));
 
 // Servir les fichiers statiques du frontend en production
 if (process.env.NODE_ENV === 'production') {

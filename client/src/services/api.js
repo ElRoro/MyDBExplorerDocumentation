@@ -4,6 +4,7 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  timeout: 20000, // 20 secondes de timeout
   headers: {
     'Content-Type': 'application/json',
   },
@@ -13,7 +14,13 @@ const api = axios.create({
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    console.error('Erreur API:', error);
+    // Ne loguer que les vraies erreurs (hors 404)
+    if (!(error.response && error.response.status === 404)) {
+      console.error('Erreur API:', error);
+    }
+    if (error.code === 'ECONNABORTED') {
+      error.message = 'La requête a pris trop de temps à répondre. Veuillez réessayer.';
+    }
     return Promise.reject(error);
   }
 );
@@ -53,16 +60,15 @@ export const searchAPI = {
 // Service des commentaires
 export const commentsAPI = {
   getAll: () => api.get('/comments'),
-  getByObject: (connectionId, databaseName, objectType, objectName, schemaName) =>
+  getByObject: (connectionId, databaseName, objectType, objectName, schemaName = null) => 
     api.get(`/comments/object/${connectionId}/${databaseName}/${objectType}/${objectName}`, {
-      params: { schema_name: schemaName },
+      params: { schema_name: schemaName }
     }),
-  getByConnection: (connectionId) => api.get(`/comments/connection/${connectionId}`),
   create: (data) => api.post('/comments', data),
   update: (id, data) => api.put(`/comments/${id}`, data),
   delete: (id) => api.delete(`/comments/${id}`),
   search: (term) => api.get(`/comments/search/${term}`),
-  getStats: () => api.get('/comments/stats/overview'),
+  getStats: () => api.get('/comments/stats/overview')
 };
 
 // Service des bases de données
@@ -70,6 +76,14 @@ export const databasesAPI = {
   getAll: () => api.get('/databases'),
   getByConnection: (connectionId) => api.get(`/databases/connection/${connectionId}`),
   getStats: () => api.get('/databases/stats'),
+};
+
+export const jobsAPI = {
+  getAll: () => api.get('/jobs'),
+  getSteps: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/steps`),
+  startJob: (connectionId, jobId, stepId = null) => api.post(`/jobs/${connectionId}/${jobId}/start`, { stepId }),
+  stopJob: (connectionId, jobId) => api.post(`/jobs/${connectionId}/${jobId}/stop`),
+  toggleJob: (connectionId, jobId, enabled) => api.post(`/jobs/${connectionId}/${jobId}/toggle`, { enabled })
 };
 
 export default api; 

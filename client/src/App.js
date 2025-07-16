@@ -20,11 +20,17 @@ import {
   Search as SearchIcon,
   Comment as CommentIcon,
   Storage as DatabaseIcon,
+  Build as BuildIcon,
+  Schedule as ScheduleIcon,
+  DataObject as DataObjectIcon,
+  Timer as TimerIcon,
 } from '@mui/icons-material';
 
 import Connections from './components/Connections';
 import Search from './components/Search';
 import Comments from './components/Comments';
+import Maintenance from './components/Maintenance';
+import SqlJobs from './components/SqlJobs';
 
 const drawerWidth = 240;
 
@@ -35,8 +41,10 @@ function App() {
 
   const menuItems = [
     { text: 'Recherche', icon: <SearchIcon />, path: '/' },
-    { text: 'Connexions', icon: <StorageIcon />, path: '/connections' },
     { text: 'Commentaires', icon: <CommentIcon />, path: '/comments' },
+    { text: 'SQL Jobs', icon: <TimerIcon />, path: '/jobs' },
+    { text: 'Maintenance', icon: <BuildIcon />, path: '/maintenance' },
+    { text: 'Connexions', icon: <StorageIcon />, path: '/connections' },
   ];
 
   const handleDrawerToggle = () => {
@@ -138,6 +146,8 @@ function App() {
           <Route path="/" element={<Search />} />
           <Route path="/connections" element={<Connections />} />
           <Route path="/comments" element={<Comments />} />
+          <Route path="/maintenance" element={<Maintenance />} />
+          <Route path="/jobs" element={<SqlJobs />} />
         </Routes>
       </Box>
     </Box>

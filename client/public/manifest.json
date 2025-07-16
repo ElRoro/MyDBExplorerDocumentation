@@ -1,0 +1,10 @@
+{
+  "short_name": "BestDBDoc",
+  "name": "BestDBDocumentation",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1976d2",
+  "background_color": "#ffffff",
+  "description": "Documentation et outils pour la gestion des jobs SQL et connexions.",
+  "icons": []
+} 

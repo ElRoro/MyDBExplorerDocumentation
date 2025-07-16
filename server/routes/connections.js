@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../database/init');
-const databaseConnector = require('../utils/databaseConnector');
+const { DatabaseConnector } = require('../utils/databaseConnector');
+const dbConnector = new DatabaseConnector();
 
 // Validation utilitaire
 function validateConnectionData({ name, type, host, port, username }) {
@@ -219,7 +220,7 @@ router.post('/:id/test', async (req, res) => {
       return res.status(404).json({ error: 'Connexion non trouvée' });
     }
     try {
-      const result = await databaseConnector.testConnection(connection);
+      const result = await dbConnector.testConnection(connection);
       res.json(result);
     } catch (error) {
       console.error('Erreur lors du test de connexion:', error);
@@ -241,12 +242,30 @@ router.get('/:id/databases', async (req, res) => {
       console.error('Connexion non trouvée pour l\'ID:', connectionId);
       return res.status(404).json({ error: 'Connexion non trouvée' });
     }
+    
+    console.log('Connexion trouvée:', {
+      id: connection.id,
+      name: connection.name,
+      type: connection.type,
+      host: connection.host,
+      port: connection.port,
+      enabled: connection.enabled,
+      ssh_enabled: connection.ssh_enabled
+    });
+    
     try {
-      const databases = await databaseConnector.getDatabases(connection);
+      console.log('Tentative de récupération des bases de données avec la configuration:', {
+        type: connection.type,
+        host: connection.host,
+        port: connection.port,
+        ssh_enabled: connection.ssh_enabled
+      });
+      const databases = await dbConnector.getDatabases(connection);
       console.log('Bases de données récupérées pour', connection.name, ':', databases);
       res.json(databases);
     } catch (error) {
-      console.error('Erreur lors de la récupération des bases de données:', error);
+      console.error('Erreur détaillée lors de la récupération des bases de données:', error);
+      console.error('Stack trace:', error.stack);
       res.status(500).json({ error: error.message });
     }
   });

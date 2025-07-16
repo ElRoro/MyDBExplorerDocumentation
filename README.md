@@ -8,6 +8,8 @@ Application de gestion et documentation de bases de données avec support pour S
 - **Gestion des connexions** : Support SSH, activation/désactivation
 - **Documentation** : Commentaires sur les objets de base de données
 - **Interface moderne** : React + Material-UI
+- **Optimisations de performance** : Index SQLite, monitoring en temps réel
+- **Monitoring avancé** : Métriques de performance, détection des requêtes lentes
 
 ## 📋 Prérequis
 
@@ -19,6 +21,10 @@ Application de gestion et documentation de bases de données avec support pour S
 ```bash
 # Installation de toutes les dépendances
 npm run install-all
+
+# Configuration des connexions (optionnel)
+cd server
+node add-default-connections.js
 
 # Démarrage en mode développement
 npm run dev
@@ -52,6 +58,8 @@ npm run dev
 │   ├── database/          # Base SQLite
 │   └── utils/             # Utilitaires
 ├── tests/                 # Tests
+├── connections.json        # Configuration des connexions (optionnel)
+├── CONNECTIONS.md         # Documentation des connexions
 └── start-background.ps1   # Script de démarrage
 ```
 
@@ -66,15 +74,30 @@ NODE_ENV=development
 ```
 
 ### Connexions de base de données
+
+#### Option 1 : Interface web (recommandé)
 1. Accédez à l'interface web
 2. Allez dans "Connexions"
 3. Ajoutez vos connexions de base de données
+
+#### Option 2 : Fichier de configuration
+1. Créez un fichier `connections.json` à la racine du projet
+2. Configurez vos connexions (voir `CONNECTIONS.md`)
+3. Exécutez : `cd server && node add-default-connections.js`
+
+**Note** : Le fichier `connections.json` est ignoré par Git pour la sécurité.
 
 ## 🧪 Tests
 
 ```bash
 # Test des connexions activées
 node tests/test-enabled-connections.js
+
+# Test des performances et index
+npm run test-performance
+
+# Migration des index de performance
+npm run migrate-indexes
 ```
 
 ## 📚 API
@@ -95,11 +118,54 @@ node tests/test-enabled-connections.js
 - `PUT /api/comments/:id` - Modifier un commentaire
 - `DELETE /api/comments/:id` - Supprimer un commentaire
 
+### Performance
+- `GET /api/performance/stats` - Statistiques de performance
+- `POST /api/performance/analyze-indexes` - Analyser les index
+- `GET /api/performance/report` - Rapport détaillé
+- `POST /api/performance/measure` - Mesurer une requête
+- `POST /api/performance/reset` - Réinitialiser les stats
+
 ## 🛡️ Sécurité
 
 - Les mots de passe sont stockés en clair (à améliorer en production)
 - Support SSH pour les connexions sécurisées
 - Validation des entrées côté serveur
+- Fichier `connections.json` ignoré par Git
+
+## 🔒 Sécurité et Confidentialité
+
+- **Ne jamais commiter de mots de passe, clés API ou fichiers de configuration sensibles.**
+- Ajoutez vos variables d'environnement dans un fichier `.env` (voir `.env.example`).
+- Ajoutez vos connexions dans un fichier `connections.json` (voir `connections.example.json`).
+- Ces fichiers sont ignorés par Git et ne doivent pas être publiés.
+
+## 📝 Exemple de configuration
+
+Créez un fichier `.env` à la racine du dossier `server/` :
+
+```env
+PORT=5000
+NODE_ENV=production
+```
+
+Créez un fichier `connections.json` à la racine du projet :
+
+```json
+{
+  "connections": [
+    {
+      "name": "exemple-sqlserver",
+      "type": "sqlserver",
+      "host": "localhost",
+      "port": 1433,
+      "username": "sa",
+      "password": "votre_mot_de_passe",
+      "database": "master",
+      "ssh_enabled": false
+    }
+  ]
+}
+```
 
 ## 🚀 Déploiement
 

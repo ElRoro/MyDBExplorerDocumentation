@@ -64,6 +64,15 @@ function initDatabase() {
       db.run('CREATE INDEX IF NOT EXISTS idx_comments_connection ON comments(connection_id)');
       db.run('CREATE INDEX IF NOT EXISTS idx_comments_object ON comments(database_name, object_type, object_name)');
       db.run('CREATE INDEX IF NOT EXISTS idx_searches_term ON recent_searches(search_term)');
+      
+      // Index de performance supplémentaires
+      db.run('CREATE INDEX IF NOT EXISTS idx_connections_enabled ON connections(enabled)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_connections_type ON connections(type)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_connections_name ON connections(name)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_recent_searches_created ON recent_searches(created_at)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_recent_searches_connection ON recent_searches(connection_id)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at)');
+      db.run('CREATE INDEX IF NOT EXISTS idx_comments_updated ON comments(updated_at)');
 
       // Migration : ajouter la colonne ssh_key_passphrase si elle n'existe pas
       db.run(`

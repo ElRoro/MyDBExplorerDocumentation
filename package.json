@@ -11,6 +11,9 @@
     "install-all": "npm install && cd server && npm install && cd ../client && npm install",
     "start": "cd server && npm start",
     "test": "node tests/test-enabled-connections.js",
+    "test-performance": "node tests/test-performance.js",
+    "test-analysis": "node tests/test-analysis.js",
+    "migrate-indexes": "cd server && node migrate-indexes.js",
     "clean": "npm run clean-deps && npm run clean-build",
     "clean-deps": "rimraf node_modules */node_modules",
     "clean-build": "rimraf build dist"

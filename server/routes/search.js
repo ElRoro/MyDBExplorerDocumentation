@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../database/init');
-const databaseConnector = require('../utils/databaseConnector');
+const { DatabaseConnector } = require('../utils/databaseConnector');
+const dbConnector = new DatabaseConnector();
 
 // Recherche d'objets
 router.post('/', async (req, res) => {
@@ -49,13 +50,13 @@ router.post('/', async (req, res) => {
           databases = [databaseName];
         } else {
           // Obtenir toutes les bases de données de la connexion
-          databases = await databaseConnector.getDatabases(connection);
+          databases = await dbConnector.getDatabases(connection);
         }
 
         // Rechercher dans chaque base de données
         for (const dbName of databases) {
           try {
-            const dbResults = await databaseConnector.searchObjects(connection, searchTerm, dbName, searchMode);
+            const dbResults = await dbConnector.searchObjects(connection, searchTerm, dbName, searchMode);
             
             // Ajouter les informations de connexion aux résultats
             const enrichedResults = dbResults.map(result => ({
@@ -164,12 +165,12 @@ router.post('/advanced', async (req, res) => {
         if (databaseNames && databaseNames.length > 0) {
           databases = databaseNames;
         } else {
-          databases = await databaseConnector.getDatabases(connection);
+          databases = await dbConnector.getDatabases(connection);
         }
 
         for (const dbName of databases) {
           try {
-            const dbResults = await databaseConnector.searchObjects(connection, searchTerm, dbName, searchMode);
+            const dbResults = await dbConnector.searchObjects(connection, searchTerm, dbName, searchMode);
             
             // Appliquer les filtres
             let filteredResults = dbResults;
@@ -240,7 +241,7 @@ router.get('/ddl/:connectionId/:databaseName/:objectType/:objectName', async (re
     }
 
     // Récupérer le DDL
-    const ddl = await databaseConnector.getObjectDDL(
+    const ddl = await dbConnector.getObjectDDL(
       connection, 
       databaseName, 
       objectType, 
@@ -275,7 +276,7 @@ router.get('/dependencies/:connectionId/:databaseName/:objectType/:objectName', 
     }
 
     // Récupérer les dépendances
-    const dependencies = await databaseConnector.getObjectDependencies(
+    const dependencies = await dbConnector.getObjectDependencies(
       connection,
       databaseName,
       objectType,
@@ -319,7 +320,7 @@ router.get('/data/:connectionId/:databaseName/:tableName', async (req, res) => {
     }
 
     // Récupérer les données de la table
-    const tableData = await databaseConnector.getTableData(
+    const tableData = await dbConnector.getTableData(
       connection,
       databaseName,
       tableName,
