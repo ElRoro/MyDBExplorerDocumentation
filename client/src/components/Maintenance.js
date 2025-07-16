@@ -38,7 +38,8 @@ import {
   ListItemIcon,
   ListItemText,
   Divider,
-  CircularProgress
+  CircularProgress,
+  TableSortLabel
 } from '@mui/material';
 import {
   Storage as StorageIcon,
@@ -74,9 +75,6 @@ const Maintenance = () => {
   const [heapTables, setHeapTables] = useState([]);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
-  const [filterServer, setFilterServer] = useState('');
-  const [filterDatabase, setFilterDatabase] = useState('');
-  const [filterSchema, setFilterSchema] = useState('');
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
   const [ddlContent, setDdlContent] = useState('');
   const [ddlLoading, setDdlLoading] = useState(false);
@@ -113,6 +111,14 @@ const Maintenance = () => {
   });
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
+
+  // Ajouter les états pour le tri
+  const [emptyOrderBy, setEmptyOrderBy] = useState('table_name');
+  const [emptyOrder, setEmptyOrder] = useState('asc');
+
+  // États pour le tri du tableau Heap Tables
+  const [heapOrderBy, setHeapOrderBy] = useState('table_name');
+  const [heapOrder, setHeapOrder] = useState('asc');
 
   useEffect(() => {
     fetchConnections();
@@ -225,19 +231,6 @@ const Maintenance = () => {
     setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
   };
-
-  // Fonction de filtrage
-  const filterData = (data) => {
-    return data.filter(item => {
-      const serverMatch = !filterServer || item.connection_name?.toLowerCase().includes(filterServer.toLowerCase());
-      const databaseMatch = !filterDatabase || item.database_name?.toLowerCase().includes(filterDatabase.toLowerCase());
-      const schemaMatch = !filterSchema || item.schema_name?.toLowerCase().includes(filterSchema.toLowerCase());
-      return serverMatch && databaseMatch && schemaMatch;
-    });
-  };
-
-  const filteredEmptyTables = filterData(emptyTables);
-  const filteredHeapTables = filterData(heapTables);
 
   const getObjectTypeLabel = (type) => {
     switch (type) {
@@ -534,6 +527,40 @@ const Maintenance = () => {
     return query;
   };
 
+  // Fonction de tri générique
+  const handleEmptySort = (property) => {
+    const isAsc = emptyOrderBy === property && emptyOrder === 'asc';
+    setEmptyOrder(isAsc ? 'desc' : 'asc');
+    setEmptyOrderBy(property);
+  };
+
+  const sortedEmptyTables = [...emptyTables].sort((a, b) => {
+    let aValue = a[emptyOrderBy] || '';
+    let bValue = b[emptyOrderBy] || '';
+    if (typeof aValue === 'number' && typeof bValue === 'number') {
+      return emptyOrder === 'asc' ? aValue - bValue : bValue - aValue;
+    }
+    return emptyOrder === 'asc'
+      ? String(aValue).localeCompare(String(bValue))
+      : String(bValue).localeCompare(String(aValue));
+  });
+
+  const handleHeapSort = (property) => {
+    const isAsc = heapOrderBy === property && heapOrder === 'asc';
+    setHeapOrder(isAsc ? 'desc' : 'asc');
+    setHeapOrderBy(property);
+  };
+
+  const sortedHeapTables = [...heapTables].sort((a, b) => {
+    let aValue = a[heapOrderBy] || '';
+    let bValue = b[heapOrderBy] || '';
+    if (typeof aValue === 'number' && typeof bValue === 'number') {
+      return heapOrder === 'asc' ? aValue - bValue : bValue - aValue;
+    }
+    return heapOrder === 'asc'
+      ? String(aValue).localeCompare(String(bValue))
+      : String(bValue).localeCompare(String(aValue));
+  });
 
 
   const renderIndexAnalysis = () => {
@@ -973,7 +1000,7 @@ const Maintenance = () => {
               label={
                 <Box display="flex" alignItems="center" gap={1}>
                   <WarningIcon />
-                  Tables Vides ({filteredEmptyTables.length})
+                  Tables Vides ({emptyTables.length})
                 </Box>
               } 
             />
@@ -981,88 +1008,11 @@ const Maintenance = () => {
               label={
                 <Box display="flex" alignItems="center" gap={1}>
                   <InfoIcon />
-                  Heap Tables ({filteredHeapTables.length})
-                </Box>
-              } 
-            />
-            <Tab 
-              label={
-                <Box display="flex" alignItems="center" gap={1}>
-                  <TrendingUpIcon />
-                  Analyse des Index
-                </Box>
-              } 
-            />
-            <Tab 
-              label={
-                <Box display="flex" alignItems="center" gap={1}>
-                  <LockIcon />
-                  Verrous & Blocages
-                </Box>
-              } 
-            />
-            <Tab 
-              label={
-                <Box display="flex" alignItems="center" gap={1}>
-                  <BackupIcon />
-                  Sauvegardes
+                  Heap Tables ({heapTables.length})
                 </Box>
               } 
             />
           </Tabs>
-
-          {/* Filtres */}
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Filtres
-              </Typography>
-              <Grid container spacing={2} alignItems="center">
-                <Grid item xs={12} md={3}>
-                  <TextField
-                    fullWidth
-                    label="Filtrer par serveur"
-                    value={filterServer}
-                    onChange={(e) => setFilterServer(e.target.value)}
-                    size="small"
-                  />
-                </Grid>
-                <Grid item xs={12} md={3}>
-                  <TextField
-                    fullWidth
-                    label="Filtrer par base de données"
-                    value={filterDatabase}
-                    onChange={(e) => setFilterDatabase(e.target.value)}
-                    size="small"
-                  />
-                </Grid>
-                <Grid item xs={12} md={3}>
-                  <TextField
-                    fullWidth
-                    label="Filtrer par schéma"
-                    value={filterSchema}
-                    onChange={(e) => setFilterSchema(e.target.value)}
-                    size="small"
-                  />
-                </Grid>
-                <Grid item xs={12} md={3}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<ClearIcon />}
-                    onClick={() => {
-                      setFilterServer('');
-                      setFilterDatabase('');
-                      setFilterSchema('');
-                      setPage(0);
-                    }}
-                    fullWidth
-                  >
-                    Réinitialiser
-                  </Button>
-                </Grid>
-              </Grid>
-            </CardContent>
-          </Card>
 
           {activeTab === 0 && (
             <Card>
@@ -1071,16 +1021,47 @@ const Maintenance = () => {
                    <Table>
                      <TableHead>
                        <TableRow>
-                         <TableCell>Table</TableCell>
-                         <TableCell>Serveur</TableCell>
-                         <TableCell>Base de données</TableCell>
-                         <TableCell>Schéma</TableCell>
-                         <TableCell align="right">Lignes</TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={emptyOrderBy === 'table_name'}
+                             direction={emptyOrderBy === 'table_name' ? emptyOrder : 'asc'}
+                             onClick={() => handleEmptySort('table_name')}
+                           >
+                             Nom
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={emptyOrderBy === 'connection_name'}
+                             direction={emptyOrderBy === 'connection_name' ? emptyOrder : 'asc'}
+                             onClick={() => handleEmptySort('connection_name')}
+                           >
+                             Serveur
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={emptyOrderBy === 'database_name'}
+                             direction={emptyOrderBy === 'database_name' ? emptyOrder : 'asc'}
+                             onClick={() => handleEmptySort('database_name')}
+                           >
+                             Base de données
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={emptyOrderBy === 'schema_name'}
+                             direction={emptyOrderBy === 'schema_name' ? emptyOrder : 'asc'}
+                             onClick={() => handleEmptySort('schema_name')}
+                           >
+                             Schéma
+                           </TableSortLabel>
+                         </TableCell>
                          <TableCell align="center">Actions</TableCell>
                        </TableRow>
                      </TableHead>
                      <TableBody>
-                       {filteredEmptyTables
+                       {sortedEmptyTables
                          .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
                          .map((table, index) => (
                            <TableRow key={index}>
@@ -1099,13 +1080,6 @@ const Maintenance = () => {
                              </TableCell>
                              <TableCell>{table.database_name}</TableCell>
                              <TableCell>{table.schema_name}</TableCell>
-                             <TableCell align="right">
-                               <Chip 
-                                 label={formatRowCount(table.row_count)} 
-                                 color="warning" 
-                                 size="small" 
-                               />
-                             </TableCell>
                              <TableCell align="center">
                                <Box display="flex" gap={1} justifyContent="center">
                                  <Tooltip title="Voir le code DDL">
@@ -1159,7 +1133,7 @@ const Maintenance = () => {
 
                                  <TablePagination
                    component="div"
-                   count={filteredEmptyTables.length}
+                   count={emptyTables.length}
                    page={page}
                    onPageChange={handleChangePage}
                    rowsPerPage={rowsPerPage}
@@ -1184,17 +1158,74 @@ const Maintenance = () => {
                    <Table>
                      <TableHead>
                        <TableRow>
-                         <TableCell>Table</TableCell>
-                         <TableCell>Serveur</TableCell>
-                         <TableCell>Base de données</TableCell>
-                         <TableCell>Schéma</TableCell>
-                         <TableCell align="right">Lignes</TableCell>
-                         <TableCell align="right">Taille</TableCell>
-                         <TableCell align="center">Index Cluster</TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={heapOrderBy === 'table_name'}
+                             direction={heapOrderBy === 'table_name' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('table_name')}
+                           >
+                             Table
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={heapOrderBy === 'connection_name'}
+                             direction={heapOrderBy === 'connection_name' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('connection_name')}
+                           >
+                             Serveur
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={heapOrderBy === 'database_name'}
+                             direction={heapOrderBy === 'database_name' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('database_name')}
+                           >
+                             Base de données
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell>
+                           <TableSortLabel
+                             active={heapOrderBy === 'schema_name'}
+                             direction={heapOrderBy === 'schema_name' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('schema_name')}
+                           >
+                             Schéma
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell align="right">
+                           <TableSortLabel
+                             active={heapOrderBy === 'row_count'}
+                             direction={heapOrderBy === 'row_count' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('row_count')}
+                           >
+                             Lignes
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell align="right">
+                           <TableSortLabel
+                             active={heapOrderBy === 'size_mb'}
+                             direction={heapOrderBy === 'size_mb' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('size_mb')}
+                           >
+                             Taille
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell align="center">
+                           <TableSortLabel
+                             active={heapOrderBy === 'has_clustered_index'}
+                             direction={heapOrderBy === 'has_clustered_index' ? heapOrder : 'asc'}
+                             onClick={() => handleHeapSort('has_clustered_index')}
+                           >
+                             Index Cluster
+                           </TableSortLabel>
+                         </TableCell>
+                         <TableCell align="center">Actions</TableCell>
                        </TableRow>
                      </TableHead>
                      <TableBody>
-                       {filteredHeapTables
+                       {sortedHeapTables
                          .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
                          .map((table, index) => (
                            <TableRow key={index}>
@@ -1290,103 +1321,13 @@ const Maintenance = () => {
 
                                  <TablePagination
                    component="div"
-                   count={filteredHeapTables.length}
+                   count={heapTables.length}
                    page={page}
                    onPageChange={handleChangePage}
                    rowsPerPage={rowsPerPage}
                    onRowsPerPageChange={handleChangeRowsPerPage}
                    labelRowsPerPage="Lignes par page"
                  />
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Onglet Analyse des Index */}
-          {activeTab === 2 && (
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Analyse des Index
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Analyse des index manquants et inutilisés pour optimiser les performances.
-                </Typography>
-                
-                {!selectedConnection || !selectedDatabase ? (
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    Sélectionnez une connexion et une base de données pour voir les résultats d'analyse des index.
-                  </Alert>
-                ) : (
-                  <>
-                    {analysisError && (
-                      <Alert severity="error" sx={{ mb: 2 }}>
-                        {analysisError}
-                      </Alert>
-                    )}
-                    
-                    {renderIndexAnalysis()}
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Onglet Verrous & Blocages */}
-          {activeTab === 3 && (
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Verrous & Blocages
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Détection des sessions bloquées et des processus actifs.
-                </Typography>
-                
-                {!selectedConnection || !selectedDatabase ? (
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    Sélectionnez une connexion et une base de données pour voir les résultats d'analyse des verrous.
-                  </Alert>
-                ) : (
-                  <>
-                    {analysisError && (
-                      <Alert severity="error" sx={{ mb: 2 }}>
-                        {analysisError}
-                      </Alert>
-                    )}
-                    
-                    {renderLocksAnalysis()}
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Onglet Sauvegardes */}
-          {activeTab === 4 && (
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Sauvegardes
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Vérification de l'historique des sauvegardes et des logs binaires.
-                </Typography>
-                
-                {!selectedConnection || !selectedDatabase ? (
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    Sélectionnez une connexion et une base de données pour voir les résultats d'analyse des sauvegardes.
-                  </Alert>
-                ) : (
-                  <>
-                    {analysisError && (
-                      <Alert severity="error" sx={{ mb: 2 }}>
-                        {analysisError}
-                      </Alert>
-                    )}
-                    
-                    {renderBackupAnalysis()}
-                  </>
-                )}
               </CardContent>
             </Card>
           )}

@@ -170,34 +170,38 @@ function Row({ job, connectionName, onJobAction }) {
     setStartMenuAnchor(null);
   };
 
-  useEffect(() => {
-    // Charger le commentaire existant au montage
-    const loadComment = async () => {
-      try {
-        const response = await commentsAPI.getByObject(
-          job.connectionId,
-          'msdb',  // Les jobs sont toujours dans msdb
-          'JOB',
-          job.name,
-          'dbo'  // Les jobs sont toujours dans le schéma dbo
-        );
-        if (response.data && response.data.length > 0) {
-          const existingComment = response.data[0];
-          setComment(existingComment.comment);
-          setExistingComment(existingComment);
-        }
-      } catch (err) {
-        if (err.response && err.response.status === 404) {
-          // Pas de commentaire, ce n'est pas une erreur grave
-          setComment('');
-          setExistingComment(null);
-        } else {
-          console.error('Erreur lors du chargement du commentaire:', err);
-        }
+  // Supprimer le useEffect qui charge le commentaire au montage
+  // Charger le commentaire uniquement lors de l'ouverture du dialogue
+  const handleOpenCommentDialog = async () => {
+    setCommentDialogOpen(true);
+    setLoadingComment(true);
+    try {
+      const response = await commentsAPI.getByObject(
+        job.connectionId,
+        'msdb',  // Les jobs sont toujours dans msdb
+        'JOB',
+        job.name,
+        'dbo'  // Les jobs sont toujours dans le schéma dbo
+      );
+      if (response.data && response.data.length > 0) {
+        const existingComment = response.data[0];
+        setComment(existingComment.comment);
+        setExistingComment(existingComment);
+      } else {
+        setComment('');
+        setExistingComment(null);
       }
-    };
-    loadComment();
-  }, [job.connectionId, job.name]);
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        setComment('');
+        setExistingComment(null);
+      } else {
+        console.error('Erreur lors du chargement du commentaire:', err);
+      }
+    } finally {
+      setLoadingComment(false);
+    }
+  };
 
   const handleCommentSave = async () => {
     setLoadingComment(true);
@@ -377,7 +381,7 @@ function Row({ job, connectionName, onJobAction }) {
                 <IconButton
                   size="small"
                   color={comment ? "primary" : "default"}
-                  onClick={() => setCommentDialogOpen(true)}
+                  onClick={handleOpenCommentDialog}
                 >
                   <CommentIcon />
                 </IconButton>
@@ -545,6 +549,7 @@ const SqlJobs = () => {
   const [loading, setLoading] = useState(false); // false par défaut
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  // Ajouter les états pour le tri des jobs
   const [orderBy, setOrderBy] = useState('name');
   const [order, setOrder] = useState('asc');
   const [filterStatus, setFilterStatus] = useState('');

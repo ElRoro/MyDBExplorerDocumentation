@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../database/init');
-const databaseConnector = require('../utils/databaseConnector');
+const { DatabaseConnector } = require('../utils/databaseConnector');
+const dbConnector = new DatabaseConnector();
 
 // Route pour analyser les tables vides
 router.get('/empty-tables', async (req, res) => {
@@ -62,7 +63,7 @@ router.get('/empty-tables', async (req, res) => {
     }
 
     // Utiliser la méthode appropriée du databaseConnector
-    const results = await databaseConnector.searchObjects(connection, '', databaseName, 'fast');
+    const results = await dbConnector.searchObjects(connection, '', databaseName, 'fast');
     
     // Filtrer pour ne garder que les tables vides
     const emptyTables = results.filter(result => 
@@ -93,7 +94,7 @@ router.get('/heap-tables', async (req, res) => {
       return res.status(400).json({ error: 'ConnectionId et databaseName sont requis' });
     }
 
-    const connection = await databaseConnector.getConnection(connectionId);
+    const connection = await dbConnector.getConnection(connectionId);
     if (!connection) {
       return res.status(404).json({ error: 'Connexion non trouvée' });
     }
@@ -143,7 +144,7 @@ router.get('/heap-tables', async (req, res) => {
       return res.status(400).json({ error: 'Type de base de données non supporté' });
     }
 
-    const results = await databaseConnector.executeQuery(connectionId, query, params);
+    const results = await dbConnector.executeQuery(connectionId, query, params);
     
     res.json({
       success: true,
@@ -206,7 +207,7 @@ router.get('/analyze', async (req, res) => {
           databases = [databaseName];
         } else {
           // Obtenir toutes les bases de données de la connexion
-          databases = await databaseConnector.getDatabases(connection);
+          databases = await dbConnector.getDatabases(connection);
         }
 
         console.log(`  Bases trouvées pour ${connection.name}:`, databases);
@@ -261,7 +262,7 @@ router.get('/analyze', async (req, res) => {
               `;
 
               try {
-                const dbConnection = await databaseConnector.connectSQLServer(connection);
+                const dbConnection = await dbConnector.connectSQLServer(connection);
                 const emptyResult = await dbConnection.request().query(emptyTablesQuery);
                 const heapResult = await dbConnection.request().query(heapTablesQuery);
 
@@ -321,7 +322,7 @@ router.get('/analyze', async (req, res) => {
               `;
 
               try {
-                const dbConnection = await databaseConnector.connectMySQL(connection);
+                const dbConnection = await dbConnector.connectMySQL(connection);
                 
                 const [emptyRows] = await new Promise((resolve, reject) => {
                   dbConnection.query(emptyTablesQuery, [dbName], (err, results) => {
@@ -353,7 +354,7 @@ router.get('/analyze', async (req, res) => {
                   database_name: dbName
                 }));
 
-                connectionPool.releaseConnection(connection, dbConnection);
+                // connectionPool.releaseConnection(connection, dbConnection); // This line was removed as per the edit hint
               } catch (queryError) {
                 console.error(`    ❌ Erreur requête MySQL sur ${dbName}:`, queryError.message);
               }

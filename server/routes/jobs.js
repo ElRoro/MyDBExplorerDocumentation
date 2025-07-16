@@ -39,7 +39,7 @@ async function getConnection(connectionId) {
 }
 
 // Utilitaire pour exécuter une requête sur une connexion SQL Server
-async function getSqlServerJobs(connection, limit = 50, offset = 0) {
+async function getSqlServerJobs(connection) {
   if (connection.type !== 'sqlserver') return [];
   
   // Requête pour obtenir les jobs en cours d'exécution
@@ -50,52 +50,48 @@ async function getSqlServerJobs(connection, limit = 50, offset = 0) {
       AND stop_execution_date IS NULL
       AND session_id = (SELECT MAX(session_id) FROM msdb.dbo.sysjobactivity)`;
 
-  // Adapter la requête SQL pour la pagination
+  // Requête SQL SANS pagination (tous les jobs)
   const sqlQuery = `
-    SELECT * FROM (
-      SELECT 
-        j.job_id,
-        j.name,
-        j.description,
-        j.enabled,
-        j.date_created,
-        j.date_modified,
-        SUSER_SNAME(j.owner_sid) as owner_name,
-        c.name as category_name,
-        h.run_status as current_execution_status,
-        h.run_duration as last_run_duration,
-        h.run_date as last_run_date,
-        h.run_time as last_run_time,
-        h.message as last_run_message,
-        s.next_run_date,
-        s.next_run_time,
-        CASE 
-          WHEN h.run_status = 1 THEN 'Succès'
-          WHEN h.run_status = 0 THEN 'Échec'
-          WHEN h.run_status = 2 THEN 'Nouvelle tentative'
-          WHEN h.run_status = 3 THEN 'Annulé'
-          WHEN h.run_status = 4 THEN 'En cours'
-          ELSE 'Inconnu'
-        END as last_run_status_desc,
-        ROW_NUMBER() OVER (ORDER BY j.name) as row_num
-      FROM msdb.dbo.sysjobs j
-      LEFT JOIN msdb.dbo.syscategories c ON j.category_id = c.category_id
-      LEFT JOIN (
-        SELECT job_id, run_status, run_duration, run_date, run_time, message,
-          ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY run_date DESC, run_time DESC) as rn
-        FROM msdb.dbo.sysjobhistory
-        WHERE step_id = 0
-      ) h ON j.job_id = h.job_id AND h.rn = 1
-      LEFT JOIN (
-        SELECT job_id, next_run_date, next_run_time,
-          ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY next_run_date ASC, next_run_time ASC) as schedule_rn
-        FROM msdb.dbo.sysjobschedules js
-        JOIN msdb.dbo.sysschedules s ON js.schedule_id = s.schedule_id
-        WHERE next_run_date >= CONVERT(int, CONVERT(varchar(8), GETDATE(), 112))
-      ) s ON j.job_id = s.job_id AND s.schedule_rn = 1
-    ) jobs
-    WHERE row_num > ${offset} AND row_num <= ${offset + limit}
-    ORDER BY name`;
+    SELECT 
+      j.job_id,
+      j.name,
+      j.description,
+      j.enabled,
+      j.date_created,
+      j.date_modified,
+      SUSER_SNAME(j.owner_sid) as owner_name,
+      c.name as category_name,
+      h.run_status as current_execution_status,
+      h.run_duration as last_run_duration,
+      h.run_date as last_run_date,
+      h.run_time as last_run_time,
+      h.message as last_run_message,
+      s.next_run_date,
+      s.next_run_time,
+      CASE 
+        WHEN h.run_status = 1 THEN 'Succès'
+        WHEN h.run_status = 0 THEN 'Échec'
+        WHEN h.run_status = 2 THEN 'Nouvelle tentative'
+        WHEN h.run_status = 3 THEN 'Annulé'
+        WHEN h.run_status = 4 THEN 'En cours'
+        ELSE 'Inconnu'
+      END as last_run_status_desc
+    FROM msdb.dbo.sysjobs j
+    LEFT JOIN msdb.dbo.syscategories c ON j.category_id = c.category_id
+    LEFT JOIN (
+      SELECT job_id, run_status, run_duration, run_date, run_time, message,
+        ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY run_date DESC, run_time DESC) as rn
+      FROM msdb.dbo.sysjobhistory
+      WHERE step_id = 0
+    ) h ON j.job_id = h.job_id AND h.rn = 1
+    LEFT JOIN (
+      SELECT job_id, next_run_date, next_run_time,
+        ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY next_run_date ASC, next_run_time ASC) as schedule_rn
+      FROM msdb.dbo.sysjobschedules js
+      JOIN msdb.dbo.sysschedules s ON js.schedule_id = s.schedule_id
+      WHERE next_run_date >= CONVERT(int, CONVERT(varchar(8), GETDATE(), 112))
+    ) s ON j.job_id = s.job_id AND s.schedule_rn = 1
+    ORDER BY j.name`;
 
   try {
     const config = {
@@ -265,14 +261,12 @@ function formatSqlTime(sqlTime) {
 
 // GET /api/jobs
 router.get('/', async (req, res) => {
-  const limit = parseInt(req.query.limit, 10) || 50;
-  const offset = parseInt(req.query.offset, 10) || 0;
   getActiveConnections(async (err, activeConnections) => {
     if (err) return res.status(500).json({ error: err.message });
     const jobsByConnection = {};
     for (const conn of activeConnections) {
       if (conn.type === 'sqlserver') {
-        jobsByConnection[conn.id] = await getSqlServerJobs(conn, limit, offset);
+        jobsByConnection[conn.id] = await getSqlServerJobs(conn);
       }
     }
     res.json(jobsByConnection);
