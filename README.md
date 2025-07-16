@@ -1,5 +1,7 @@
 # DBExplorer Documentation
 
+> ⚠️ **Ce projet est en cours de développement. Certaines fonctionnalités n'ont pas encore été entièrement testées et peuvent comporter des bugs ou des comportements inattendus.**
+
 Application de gestion et documentation de bases de données avec support pour SQL Server, MySQL et MariaDB.
 
 ## 🚀 Fonctionnalités
