@@ -232,7 +232,7 @@ router.post('/:id/test', async (req, res) => {
 // Obtenir les bases de données d'une connexion
 router.get('/:id/databases', async (req, res) => {
   const connectionId = req.params.id;
-  console.log('Récupération des bases de données pour la connexion:', connectionId);
+      // Récupération des bases de données pour la connexion
   db.get('SELECT * FROM connections WHERE id = ?', [connectionId], async (err, connection) => {
     if (err) {
       console.error('Erreur lors de la récupération de la connexion:', err);
@@ -243,29 +243,108 @@ router.get('/:id/databases', async (req, res) => {
       return res.status(404).json({ error: 'Connexion non trouvée' });
     }
     
-    console.log('Connexion trouvée:', {
-      id: connection.id,
-      name: connection.name,
-      type: connection.type,
-      host: connection.host,
-      port: connection.port,
-      enabled: connection.enabled,
-      ssh_enabled: connection.ssh_enabled
-    });
+      // Connexion trouvée
     
     try {
-      console.log('Tentative de récupération des bases de données avec la configuration:', {
-        type: connection.type,
-        host: connection.host,
-        port: connection.port,
-        ssh_enabled: connection.ssh_enabled
-      });
+      // Tentative de récupération des bases de données
       const databases = await dbConnector.getDatabases(connection);
-      console.log('Bases de données récupérées pour', connection.name, ':', databases);
+      // Bases de données récupérées avec succès
       res.json(databases);
     } catch (error) {
       console.error('Erreur détaillée lors de la récupération des bases de données:', error);
       console.error('Stack trace:', error.stack);
+      res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// Nouvelle route : Obtenir les informations techniques d'une connexion
+router.get('/:id/info', async (req, res) => {
+  const connectionId = req.params.id;
+  const { DatabaseConnector } = require('../utils/databaseConnector');
+  const dbConnector = new DatabaseConnector();
+  const sqlite3 = require('sqlite3').verbose();
+  const db = new sqlite3.Database(require('path').join(__dirname, '../database/dbexplorer.sqlite'));
+
+  db.get('SELECT * FROM connections WHERE id = ?', [connectionId], async (err, connection) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    if (!connection) {
+      return res.status(404).json({ error: 'Connexion non trouvée' });
+    }
+    try {
+      // Construction de la config
+      const config = {
+        type: connection.type,
+        host: connection.host,
+        port: connection.port,
+        username: connection.username,
+        password: connection.password,
+        database: connection.database,
+        ssh_enabled: connection.ssh_enabled,
+        ssh_host: connection.ssh_host,
+        ssh_port: connection.ssh_port,
+        ssh_username: connection.ssh_username,
+        ssh_password: connection.ssh_password,
+        ssh_private_key: connection.ssh_private_key,
+        ssh_key_passphrase: connection.ssh_key_passphrase
+      };
+      // 1. Version SGBD
+      let version = null;
+      try {
+        version = await dbConnector.getServerVersion(config);
+      } catch (e) {
+        version = 'Inconnue';
+      }
+      // 2. Bases de données
+      let databases = [];
+      try {
+        databases = await dbConnector.getDatabases(config);
+      } catch (e) {
+        databases = [];
+      }
+      // 3. Pour chaque base, récupérer volume et tables
+      let totalVolumeMb = 0;
+      let basesDetails = [];
+      for (const dbName of databases) {
+        let baseVolumeMb = 0;
+        let tables = [];
+        let avgBackupVariation = null;
+        try {
+          tables = await dbConnector.getTablesWithStats(config, dbName);
+          baseVolumeMb = tables.reduce((sum, t) => sum + (t.size_mb || 0), 0);
+        } catch (e) {
+          tables = [];
+        }
+        // Ajout de la stat de variation sauvegarde (SQL Server uniquement)
+        try {
+          avgBackupVariation = await dbConnector.getBackupVariationAvg(config, dbName);
+        } catch (e) {
+          avgBackupVariation = null;
+        }
+        // Base analysée avec succès
+        totalVolumeMb += baseVolumeMb;
+        basesDetails.push({
+          name: dbName,
+          volume_mb: baseVolumeMb,
+          tables_count: tables.length,
+          tables: tables,
+          avg_backup_variation_pourcent: avgBackupVariation
+        });
+      }
+      res.json({
+        connection: {
+          id: connection.id,
+          name: connection.name,
+          type: connection.type
+        },
+        version,
+        databases_count: databases.length,
+        total_volume_mb: totalVolumeMb,
+        databases: basesDetails
+      });
+    } catch (error) {
       res.status(500).json({ error: error.message });
     }
   });

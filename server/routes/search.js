@@ -328,13 +328,7 @@ router.get('/data/:connectionId/:databaseName/:tableName', async (req, res) => {
       parseInt(limit)
     );
 
-    console.log('Données de la table récupérées:', {
-      tableName,
-      databaseName,
-      schema_name,
-      columnsCount: tableData.columns?.length || 0,
-      dataCount: tableData.data?.length || 0
-    });
+    // Données de la table récupérées avec succès
 
     res.json(tableData);
 

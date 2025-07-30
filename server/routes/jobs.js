@@ -259,6 +259,179 @@ function formatSqlTime(sqlTime) {
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 }
 
+// Fonction pour récupérer les détails d'une step spécifique
+async function getStepDetails(connection, jobId, stepId) {
+  // Requête pour les détails de la step
+  const stepDetailsQuery = `
+    SELECT 
+      s.step_id,
+      s.step_name,
+      s.subsystem,
+      s.command,
+      s.database_name,
+      s.database_user_name,
+      s.retry_attempts,
+      s.retry_interval,
+      s.output_file_name,
+      s.on_success_action,
+      s.on_success_step_id,
+      s.on_fail_action,
+      s.on_fail_step_id,
+      s.last_run_outcome,
+      s.last_run_duration,
+      s.last_run_retries,
+      s.last_run_date,
+      s.last_run_time,
+      h.message as last_run_message,
+      CASE 
+        WHEN s.on_success_action = 1 THEN 'Quitter avec succès'
+        WHEN s.on_success_action = 2 THEN 'Aller à l''étape suivante'
+        WHEN s.on_success_action = 3 THEN 'Aller à l''étape: ' + CAST(s.on_success_step_id AS VARCHAR)
+        ELSE 'Inconnu'
+      END as on_success_action_desc,
+      CASE 
+        WHEN s.on_fail_action = 1 THEN 'Quitter avec échec'
+        WHEN s.on_fail_action = 2 THEN 'Aller à l''étape suivante'
+        WHEN s.on_fail_action = 3 THEN 'Aller à l''étape: ' + CAST(s.on_fail_step_id AS VARCHAR)
+        ELSE 'Inconnu'
+      END as on_fail_action_desc
+    FROM msdb.dbo.sysjobsteps s
+    LEFT JOIN (
+      SELECT job_id, step_id, message,
+        ROW_NUMBER() OVER (PARTITION BY job_id, step_id ORDER BY run_date DESC, run_time DESC) as rn
+      FROM msdb.dbo.sysjobhistory WITH (NOLOCK)
+      WHERE step_id > 0
+        AND job_id = @jobId
+        AND step_id = @stepId
+    ) h ON s.job_id = h.job_id AND s.step_id = h.step_id AND h.rn = 1
+    WHERE s.job_id = @jobId AND s.step_id = @stepId`;
+
+  // Requête pour l'historique complet de la step
+  const stepHistoryQuery = `
+    SELECT TOP 5
+      h.run_date,
+      h.run_time,
+      h.run_duration,
+      h.run_status,
+      h.message,
+      h.retries_attempted,
+      h.step_id,
+      CASE 
+        WHEN h.run_status = 1 THEN 'Succès'
+        WHEN h.run_status = 0 THEN 'Échec'
+        WHEN h.run_status = 2 THEN 'Nouvelle tentative'
+        WHEN h.run_status = 3 THEN 'Annulé'
+        WHEN h.run_status = 4 THEN 'En cours'
+        ELSE 'Inconnu'
+      END as run_status_desc
+    FROM msdb.dbo.sysjobhistory h WITH (NOLOCK)
+    WHERE h.job_id = @jobId AND h.step_id = @stepId
+    ORDER BY h.run_date DESC, h.run_time DESC`;
+
+  // Requête pour les informations du job parent
+  const jobInfoQuery = `
+    SELECT 
+      j.name as job_name,
+      j.description as job_description,
+      c.name as category_name
+    FROM msdb.dbo.sysjobs j
+    LEFT JOIN msdb.dbo.syscategories c ON j.category_id = c.category_id
+    WHERE j.job_id = @jobId`;
+
+  try {
+    const config = {
+      server: connection.host,
+      port: connection.port,
+      user: connection.username,
+      password: connection.password,
+      database: connection.database || 'msdb',
+      options: {
+        encrypt: false,
+        trustServerCertificate: true
+      },
+      requestTimeout: 30000,
+      connectionTimeout: 30000,
+      pool: {
+        max: 1,
+        min: 0,
+        idleTimeoutMillis: 5000
+      }
+    };
+
+    let pool;
+    try {
+      pool = await sql.connect(config);
+      
+      // Récupérer les détails de la step
+      const stepResult = await pool.request()
+        .input('jobId', sql.UniqueIdentifier, jobId)
+        .input('stepId', sql.Int, stepId)
+        .query(stepDetailsQuery);
+
+      if (!stepResult.recordset || stepResult.recordset.length === 0) {
+        throw new Error('Step non trouvée');
+      }
+
+      const step = stepResult.recordset[0];
+
+      // Récupérer l'historique
+      const historyResult = await pool.request()
+        .input('jobId', sql.UniqueIdentifier, jobId)
+        .input('stepId', sql.Int, stepId)
+        .query(stepHistoryQuery);
+
+      // Récupérer les informations du job
+      const jobResult = await pool.request()
+        .input('jobId', sql.UniqueIdentifier, jobId)
+        .query(jobInfoQuery);
+
+      const jobInfo = jobResult.recordset[0];
+
+      return {
+        step: {
+          id: step.step_id,
+          name: step.step_name,
+          subsystem: step.subsystem,
+          command: step.command,
+          databaseName: step.database_name,
+          databaseUserName: step.database_user_name,
+          retryAttempts: step.retry_attempts,
+          retryInterval: step.retry_interval,
+          outputFileName: step.output_file_name,
+          onSuccessAction: step.on_success_action_desc,
+          onFailAction: step.on_fail_action_desc,
+          lastRunOutcome: step.last_run_outcome,
+          lastRunDuration: formatDuration(step.last_run_duration),
+          lastRunRetries: step.last_run_retries,
+          lastRunDate: formatSqlDate(step.last_run_date),
+          lastRunTime: formatSqlTime(step.last_run_time),
+          lastRunMessage: step.last_run_message
+        },
+        history: historyResult.recordset.map(h => ({
+          runDate: formatSqlDate(h.run_date),
+          runTime: formatSqlTime(h.run_time),
+          runDuration: formatDuration(h.run_duration),
+          runStatus: h.run_status_desc,
+          message: h.message,
+          retriesAttempted: h.retries_attempted
+        })),
+        jobInfo: {
+          name: jobInfo.job_name,
+          description: jobInfo.job_description,
+          category: jobInfo.category_name
+        }
+      };
+    } finally {
+      if (pool) {
+        await pool.close();
+      }
+    }
+  } catch (err) {
+    console.error('Erreur lors de la récupération des détails de la step:', err);
+    throw err;
+  }
+}
+
 // GET /api/jobs
 router.get('/', async (req, res) => {
   getActiveConnections(async (err, activeConnections) => {
@@ -288,6 +461,27 @@ router.get('/:connectionId/:jobId/steps', async (req, res) => {
     try {
       const steps = await getJobSteps(connection, jobId);
       res.json(steps);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+});
+
+// GET /api/jobs/:connectionId/:jobId/steps/:stepId/details
+router.get('/:connectionId/:jobId/steps/:stepId/details', async (req, res) => {
+  const { connectionId, jobId, stepId } = req.params;
+  
+  getActiveConnections(async (err, activeConnections) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const connection = activeConnections.find(conn => conn.id === connectionId);
+    if (!connection) {
+      return res.status(404).json({ error: 'Connexion non trouvée' });
+    }
+
+    try {
+      const stepDetails = await getStepDetails(connection, jobId, parseInt(stepId));
+      res.json(stepDetails);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -409,6 +603,45 @@ router.post('/:connectionId/:jobId/toggle', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur lors de la modification du job:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error('Erreur lors de la fermeture de la connexion:', err);
+      }
+    }
+  }
+});
+
+// Route pour mettre à jour la commande d'une step
+router.put('/:connectionId/:jobId/steps/:stepId/command', async (req, res) => {
+  let connection;
+  try {
+    const { connectionId, jobId, stepId } = req.params;
+    const { command } = req.body;
+    connection = await getConnection(connectionId);
+    
+    const query = `
+      UPDATE msdb.dbo.sysjobsteps 
+      SET command = @command
+      WHERE job_id = @jobId AND step_id = @stepId
+    `;
+    
+    const result = await connection.request()
+      .input('jobId', sql.UniqueIdentifier, jobId)
+      .input('stepId', sql.Int, stepId)
+      .input('command', sql.NVarChar, command)
+      .query(query);
+    
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ error: 'Step non trouvée' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour de la commande:', error);
     res.status(500).json({ error: error.message });
   } finally {
     if (connection) {

@@ -6,7 +6,7 @@ Application de gestion et documentation de bases de données avec support pour S
 
 ## 🚀 Fonctionnalités
 
-- **Recherche d'objets** : Tables, vues, procédures stockées, fonctions
+- **Recherche** : Tables, vues, procédures stockées, fonctions
 - **Gestion des connexions** : Support SSH, activation/désactivation
 - **Documentation** : Commentaires sur les objets de base de données
 - **Interface moderne** : React + Material-UI

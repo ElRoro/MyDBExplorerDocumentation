@@ -81,6 +81,8 @@ export const databasesAPI = {
 export const jobsAPI = {
   getAll: () => api.get('/jobs'),
   getSteps: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/steps`),
+  getStepDetails: (connectionId, jobId, stepId) => api.get(`/jobs/${connectionId}/${jobId}/steps/${stepId}/details`),
+  updateStepCommand: (connectionId, jobId, stepId, command) => api.put(`/jobs/${connectionId}/${jobId}/steps/${stepId}/command`, { command }),
   startJob: (connectionId, jobId, stepId = null) => api.post(`/jobs/${connectionId}/${jobId}/start`, { stepId }),
   stopJob: (connectionId, jobId) => api.post(`/jobs/${connectionId}/${jobId}/stop`),
   toggleJob: (connectionId, jobId, enabled) => api.post(`/jobs/${connectionId}/${jobId}/toggle`, { enabled })

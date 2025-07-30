@@ -59,6 +59,7 @@ import {
 import { searchAPI, connectionsAPI, commentsAPI } from '../services/api';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import logger from '../utils/logger';
 
 const Search = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -134,13 +135,13 @@ const Search = () => {
 
   const fetchDatabases = async (connectionId) => {
     const requestId = ++fetchDbRequestId.current;
-    console.log('Récupération des bases de données pour la connexion:', connectionId, 'Request ID:', requestId);
+            logger.api('Récupération des bases de données pour la connexion', { connectionId, requestId });
     try {
       const response = await connectionsAPI.getDatabases(connectionId);
-      console.log('Réponse des bases de données pour la connexion', connectionId, ':', response.data);
+              logger.api('Réponse des bases de données reçue', { connectionId, data: response.data });
       if (fetchDbRequestId.current === requestId) {
         setDatabases(response.data || []);
-        console.log('Bases de données mises à jour pour la connexion', connectionId, ':', response.data);
+                  logger.api('Bases de données mises à jour', { connectionId, data: response.data });
       }
     } catch (err) {
       console.error('Erreur lors de la récupération des bases de données pour la connexion', connectionId, ':', err);
@@ -320,7 +321,7 @@ const Search = () => {
         setCommentText(existing.comment);
       }
     } catch (error) {
-      console.log('Aucun commentaire existant trouvé');
+              logger.info('Aucun commentaire existant trouvé');
     }
     
     setCommentDialogOpen(true);
@@ -355,7 +356,7 @@ const Search = () => {
       setExistingComment(null);
       
       // Optionnel : Afficher un message de succès
-      console.log('Commentaire sauvegardé avec succès');
+              logger.info('Commentaire sauvegardé avec succès');
     } catch (error) {
       console.error('Erreur lors de la sauvegarde du commentaire:', error);
       // Optionnel : Afficher un message d'erreur
@@ -582,10 +583,69 @@ const Search = () => {
     }
   };
 
+  // Fonctions d'export CSV pour les résultats de recherche
+  const generateSearchResultsCSV = (results) => {
+    if (!results || results.length === 0) return '';
+    
+    const headers = [
+      'Type',
+      'Nom',
+      'Schéma',
+      'Base de données',
+      'Serveur',
+      'Description'
+    ].join(',');
+    
+    const rows = results.map(result => [
+      getObjectTypeLabel(result.object_type),
+      result.object_name,
+      result.schema_name || '',
+      result.database_name,
+      result.connection_name,
+      result.description
+    ].map(value => {
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    }).join(','));
+    
+    return `${headers}\n${rows.join('\n')}`;
+  };
+
+  const handleExportGlobalCSV = () => {
+    const csvContent = generateSearchResultsCSV(results);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recherche_globale_${searchTerm}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setCsvExportSuccess(true);
+    setTimeout(() => setCsvExportSuccess(false), 2000);
+  };
+
+  const handleExportServerCSV = (connectionId, connectionName) => {
+    const serverResults = results.filter(result => result.connection_id === connectionId);
+    const csvContent = generateSearchResultsCSV(serverResults);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recherche_${connectionName}_${searchTerm}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setCsvExportSuccess(true);
+    setTimeout(() => setCsvExportSuccess(false), 2000);
+  };
+
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
-        Recherche d'objets
+        Recherche
       </Typography>
 
       <Card sx={{ mb: 3 }}>
@@ -609,7 +669,7 @@ const Search = () => {
                 <Select
                   value={selectedConnection}
                   onChange={(e) => {
-                    console.log('Connexion sélectionnée:', e.target.value);
+                    logger.ui('Connexion sélectionnée', { value: e.target.value });
                     setSelectedConnection(e.target.value);
                   }}
                   label="Connexion"
@@ -730,11 +790,23 @@ const Search = () => {
 
       {results.length > 0 && (
         <Box>
-          <Typography variant="h6" gutterBottom>
-            Résultats ({results.length} objets trouvés)
-          </Typography>
+          <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+            <Typography variant="h6">
+              Résultats ({results.length} objets trouvés)
+            </Typography>
+            <Button
+              onClick={handleExportGlobalCSV}
+              disabled={results.length === 0}
+              color={csvExportSuccess ? "success" : "primary"}
+              variant={csvExportSuccess ? "contained" : "outlined"}
+              size="small"
+              startIcon={<CopyIcon />}
+            >
+              {csvExportSuccess ? "Exporté !" : "Export CSV Global"}
+            </Button>
+          </Box>
 
-          {Object.values(groupedResults).map((group) => (
+                      {Object.values(groupedResults).map((group) => (
             <Accordion key={group.connection.id} defaultExpanded>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                 <Box display="flex" alignItems="center" width="100%">
@@ -747,9 +819,25 @@ const Search = () => {
                   <Typography variant="h6" sx={{ flexGrow: 1 }}>
                     {group.connection.name}
                   </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    {Object.values(group.databases).flat().length} objets
-                  </Typography>
+                  <Box display="flex" alignItems="center" gap={2}>
+                    <Typography variant="body2" color="textSecondary">
+                      {Object.values(group.databases).flat().length} objets
+                    </Typography>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleExportServerCSV(group.connection.id, group.connection.name);
+                      }}
+                      disabled={Object.values(group.databases).flat().length === 0}
+                      color={csvExportSuccess ? "success" : "primary"}
+                      variant={csvExportSuccess ? "contained" : "outlined"}
+                      size="small"
+                      startIcon={<CopyIcon />}
+                      sx={{ minWidth: 'auto' }}
+                    >
+                      {csvExportSuccess ? "Exporté !" : "Export CSV"}
+                    </Button>
+                  </Box>
                 </Box>
               </AccordionSummary>
               

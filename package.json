@@ -18,10 +18,20 @@
     "clean-deps": "rimraf node_modules */node_modules",
     "clean-build": "rimraf build dist"
   },
-  "keywords": ["database", "documentation", "sql", "mysql", "mariadb", "sqlserver"],
+  "keywords": [
+    "database",
+    "documentation",
+    "sql",
+    "mysql",
+    "mariadb",
+    "sqlserver"
+  ],
   "author": "DB Administrator",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
   }
-} 
+}

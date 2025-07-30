@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const logger = require('./utils/logger');
 require('dotenv').config();
 
 const app = express();
@@ -37,8 +38,7 @@ if (process.env.NODE_ENV === 'production') {
 
 // Gestion des erreurs globales
 app.use((err, req, res, next) => {
-  console.error('Erreur serveur:', err);
-  console.error('Stack trace:', err.stack);
+  logger.error('Erreur serveur', err);
   res.status(500).json({ 
     error: 'Erreur serveur interne',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Une erreur est survenue'
@@ -47,17 +47,15 @@ app.use((err, req, res, next) => {
 
 // Gestion des erreurs non capturées
 process.on('uncaughtException', (err) => {
-  console.error('Erreur non capturée (uncaughtException):', err);
-  console.error('Stack trace:', err.stack);
+  logger.error('Erreur non capturée (uncaughtException)', err);
   // Ne pas arrêter le serveur, juste logger l'erreur
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Promesse rejetée non gérée (unhandledRejection):', reason);
-  console.error('Promise:', promise);
+  logger.error('Promesse rejetée non gérée (unhandledRejection)', reason);
   // Ne pas arrêter le serveur, juste logger l'erreur
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+  logger.info(`Serveur démarré sur le port ${PORT}`);
 }); 

@@ -126,7 +126,7 @@ Après une analyse approfondie du projet, j'ai identifié plusieurs éléments d
 
 ### Routes Serveur Actives
 - ✅ `/api/connections` - Gestion des connexions
-- ✅ `/api/search` - Recherche d'objets
+- ✅ `/api/search` - Recherche
 - ✅ `/api/comments` - Gestion des commentaires
 - ✅ `/api/databases` - Statistiques des bases de données
 

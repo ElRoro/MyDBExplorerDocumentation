@@ -3,6 +3,7 @@ const mysql = require('mysql2');
 const { Client } = require('ssh2');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const logger = require('./logger');
 const dbPath = path.join(__dirname, '../database/dbexplorer.sqlite');
 const db = new sqlite3.Database(dbPath);
 
@@ -178,7 +179,7 @@ class ConnectionPool {
           if (config.ssh_key_passphrase) {
             sshConfig.passphrase = config.ssh_key_passphrase;
           }
-          console.log('[DEBUG] Clé privée SSH chargée.');
+          logger.debug('Clé privée SSH chargée');
         } catch (keyError) {
           console.error('[ERREUR] Erreur de clé SSH:', keyError);
           reject(new Error(`Erreur de clé SSH: ${keyError.message}`));
@@ -186,7 +187,7 @@ class ConnectionPool {
         }
       }
 
-      console.log('[DEBUG] Connexion SSH en cours avec la configuration:', sshConfig);
+              logger.debug('Connexion SSH en cours', sshConfig);
       sshClient.connect(sshConfig);
     });
   }
@@ -389,7 +390,7 @@ class DatabaseConnector {
   async getDatabases(config) {
     let connection;
     try {
-      console.log('getDatabases - Début avec config:', {
+      logger.db('Récupération des bases de données', {
         type: config.type,
         host: config.host,
         port: config.port,
@@ -402,9 +403,9 @@ class DatabaseConnector {
       
       switch (config.type) {
         case 'sqlserver':
-          console.log('getDatabases - Tentative de connexion SQL Server');
+          logger.db('Connexion SQL Server');
           connection = await this.connectSQLServer(config);
-          console.log('getDatabases - Connexion SQL Server établie');
+          logger.db('Connexion SQL Server établie');
           const result = await connection.request().query(`
             SELECT name FROM sys.databases 
             WHERE database_id > 4 
@@ -414,13 +415,13 @@ class DatabaseConnector {
           break;
         case 'mysql':
         case 'mariadb':
-          console.log('getDatabases - Tentative de connexion MySQL/MariaDB');
+          logger.db('Connexion MySQL/MariaDB');
           connection = await this.connectMySQL(config);
-          console.log('getDatabases - Connexion MySQL/MariaDB établie');
+          logger.db('Connexion MySQL/MariaDB établie');
           const [rows] = await new Promise((resolve, reject) => {
             connection.query('SHOW DATABASES', (err, results) => {
               if (err) {
-                console.error('getDatabases - Erreur MySQL/MariaDB:', err);
+                logger.error('Erreur MySQL/MariaDB', err);
                 reject(err);
               } else {
                 resolve([results]);
@@ -433,11 +434,10 @@ class DatabaseConnector {
           break;
       }
 
-      console.log('getDatabases - Bases trouvées:', databases);
+      logger.db('Bases trouvées', databases);
       return databases;
     } catch (error) {
-      console.error('getDatabases - Erreur détaillée:', error);
-      console.error('getDatabases - Stack trace:', error.stack);
+      logger.error('Erreur lors de la récupération des bases de données', error);
       throw new Error(`Erreur lors de la récupération des bases de données: ${error.message}`);
     } finally {
       if (connection) {
@@ -449,7 +449,7 @@ class DatabaseConnector {
             connectionPool.releaseConnection(config, connection);
           }
         } catch (e) {
-          console.error('getDatabases - Erreur lors de la fermeture de la connexion:', e);
+          logger.error('Erreur lors de la fermeture de la connexion', e);
         }
       }
     }
@@ -757,7 +757,7 @@ class DatabaseConnector {
   async getObjectDDL(config, databaseName, objectType, objectName, schemaName) {
     let connection;
     try {
-      console.log(`Récupération DDL pour: ${objectType} ${schemaName}.${objectName} dans ${databaseName}`);
+      logger.db(`Récupération DDL pour ${objectType} ${schemaName}.${objectName} dans ${databaseName}`);
       let ddl = '';
       
       switch (config.type) {
@@ -806,12 +806,12 @@ class DatabaseConnector {
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 WHERE t.name = @objectName AND s.name = @schemaName
               `;
-              console.log('Requête TABLE:', tableQuery);
+              logger.db('Requête TABLE', tableQuery);
               const tableResult = await connection.request()
                 .input('objectName', sql.NVarChar, objectName)
                 .input('schemaName', sql.NVarChar, schemaName)
                 .query(tableQuery);
-              console.log('Résultat TABLE:', tableResult.recordset);
+              logger.db('Résultat TABLE', tableResult.recordset);
               ddl = tableResult.recordset[0]?.ddl || 'DDL non disponible';
               break;
               
@@ -842,12 +842,12 @@ class DatabaseConnector {
                 `;
               }
               
-              console.log('Requête', objectType, ':', objectQuery);
+              logger.db(`Requête ${objectType}`, objectQuery);
               const objectResult = await connection.request()
                 .input('objectName', sql.NVarChar, objectName)
                 .input('schemaName', sql.NVarChar, schemaName)
                 .query(objectQuery);
-              console.log('Résultat', objectType, ':', objectResult.recordset);
+              logger.db(`Résultat ${objectType}`, objectResult.recordset);
               ddl = objectResult.recordset[0]?.ddl || 'DDL non disponible';
               break;
           }
@@ -915,7 +915,7 @@ class DatabaseConnector {
           break;
       }
 
-      console.log('DDL final:', ddl ? 'DDL trouvé' : 'DDL non trouvé');
+              logger.db('DDL final', ddl ? 'DDL trouvé' : 'DDL non trouvé');
       return ddl;
     } catch (error) {
       console.error('Erreur dans getObjectDDL:', error);
@@ -1330,7 +1330,7 @@ class DatabaseConnector {
                 columns = columnsResult.recordset;
               }
             } catch (error) {
-              console.log('Impossible de récupérer les métadonnées des colonnes, utilisation des types par défaut');
+              logger.warn('Impossible de récupérer les métadonnées des colonnes, utilisation des types par défaut');
             }
           }
           break;
@@ -1392,7 +1392,7 @@ class DatabaseConnector {
                 columns = columnsRows;
               }
             } catch (error) {
-              console.log('Impossible de récupérer les métadonnées des colonnes, utilisation des types par défaut');
+              logger.warn('Impossible de récupérer les métadonnées des colonnes, utilisation des types par défaut');
             }
           }
           break;
@@ -1467,6 +1467,154 @@ class DatabaseConnector {
         } catch (e) {
           // Ignore l'erreur si la connexion est déjà fermée
         }
+      }
+    }
+  }
+
+  // Obtenir la version du serveur SGBD
+  async getServerVersion(config) {
+    let connection;
+    try {
+      switch (config.type) {
+        case 'sqlserver':
+          connection = await this.connectSQLServer(config);
+          const result = await connection.request().query("SELECT SERVERPROPERTY('ProductVersion') as version, SERVERPROPERTY('ProductLevel') as level, SERVERPROPERTY('Edition') as edition");
+          const v = result.recordset[0];
+          return v ? `${v.version} (${v.level}, ${v.edition})` : 'Inconnue';
+        case 'mysql':
+        case 'mariadb':
+          connection = await this.connectMySQL(config);
+          const [rows] = await new Promise((resolve, reject) => {
+            connection.query('SELECT VERSION() as version', (err, results) => {
+              if (err) reject(err);
+              else resolve([results]);
+            });
+          });
+          return rows[0]?.version || 'Inconnue';
+        default:
+          return 'Non supporté';
+      }
+    } finally {
+      if (connection) {
+        try {
+          if (config.type === 'sqlserver') {
+            await connection.close();
+          } else {
+            connectionPool.releaseConnection(config, connection);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  // Obtenir la liste des tables avec stats (nombre de lignes, taille Mo) pour une base
+  async getTablesWithStats(config, databaseName) {
+    let connection;
+    try {
+      switch (config.type) {
+        case 'sqlserver':
+          // Connexion à la base cible
+          const connectionString = {
+            server: config.host,
+            port: config.port,
+            user: config.username,
+            password: config.password,
+            database: databaseName,
+            options: { encrypt: false, trustServerCertificate: true }
+          };
+          connection = await new sql.ConnectionPool(connectionString).connect();
+          const result = await connection.request().query(`
+            SELECT
+              t.name as table_name,
+              s.name as schema_name,
+              SUM(p.rows) as row_count,
+              CAST(ROUND((SUM(a.total_pages) * 8) / 1024.00, 2) AS DECIMAL(36, 2)) as size_mb
+            FROM sys.tables t
+            INNER JOIN sys.indexes i ON t.object_id = i.object_id
+            INNER JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+            INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            WHERE i.index_id <= 1 AND t.is_ms_shipped = 0
+            GROUP BY t.name, s.name
+            ORDER BY size_mb DESC, table_name
+          `);
+          return result.recordset.map(r => ({
+            name: r.table_name,
+            schema: r.schema_name,
+            row_count: r.row_count,
+            size_mb: parseFloat(r.size_mb)
+          }));
+        case 'mysql':
+        case 'mariadb':
+          connection = await this.connectMySQL({ ...config, database: databaseName });
+          const [rows] = await new Promise((resolve, reject) => {
+            connection.query(`
+              SELECT 
+                t.table_name,
+                t.table_schema as schema_name,
+                t.table_rows as row_count,
+                ROUND(((data_length + index_length) / 1024 / 1024), 2) as size_mb
+              FROM information_schema.tables t
+              WHERE t.table_schema = ? AND t.table_type = 'BASE TABLE'
+              ORDER BY size_mb DESC, table_name
+            `, [databaseName], (err, results) => {
+              if (err) reject(err);
+              else resolve([results]);
+            });
+          });
+          return rows.map(r => ({
+            name: r.table_name,
+            schema: r.schema_name,
+            row_count: r.row_count,
+            size_mb: parseFloat(r.size_mb)
+          }));
+        default:
+          return [];
+      }
+    } finally {
+      if (connection) {
+        try {
+          if (config.type === 'sqlserver') {
+            await connection.close();
+          } else {
+            connectionPool.releaseConnection(config, connection);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  // Moyenne du pourcentage de variation quotidienne de la taille des sauvegardes (SQL Server uniquement)
+  async getBackupVariationAvg(config, databaseName) {
+    if (config.type !== 'sqlserver') return null;
+    let connection;
+    try {
+      connection = await this.connectSQLServer(config);
+      const query = `
+        WITH backups AS (
+          SELECT TOP 20
+            backup_finish_date,
+            backup_size / 1024.0 / 1024.0 AS taille_mo,
+            LAG(backup_size / 1024.0 / 1024.0) OVER (ORDER BY backup_finish_date) AS taille_mo_precedente,
+            (backup_size / 1024.0 / 1024.0) - LAG(backup_size / 1024.0 / 1024.0) OVER (ORDER BY backup_finish_date) AS variation_taille_mo
+          FROM msdb.dbo.backupset
+          WHERE database_name = @dbName
+            AND type = 'D'
+          ORDER BY backup_finish_date DESC
+        )
+        SELECT AVG(CASE WHEN taille_mo_precedente > 0 THEN (variation_taille_mo * 100.0 / taille_mo_precedente) END) AS avg_variation_pourcent
+        FROM backups
+        WHERE taille_mo_precedente IS NOT NULL;
+      `;
+      const result = await connection.request()
+        .input('dbName', sql.NVarChar, databaseName)
+        .query(query);
+      return result.recordset[0]?.avg_variation_pourcent || null;
+    } catch (e) {
+      return null;
+    } finally {
+      if (connection) {
+        try { await connection.close(); } catch (e) {}
       }
     }
   }

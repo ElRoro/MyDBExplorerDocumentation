@@ -1,14 +1,22 @@
 # Fichiers sensibles
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 connections.json
+connections.example.json
 
 # Fichiers temporaires et PID
 app.pid
 *.pid
 *.log
+logs/
+*.log.*
 
 # Bases de données locales
 *.sqlite
+*.db
 
 # Node modules
 node_modules/
@@ -19,12 +27,39 @@ server/node_modules/
 build/
 dist/
 client/build/
+client/dist/
 
 # Systèmes
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# IDE/Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Autres
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log* 
+yarn-error.log*
+.pnpm-debug.log*
+
+# SSL certificates
+ssl/
+*.pem
+*.key
+*.crt
+
+# Docker
+.dockerignore
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Temporary files
+tmp/
+temp/ 

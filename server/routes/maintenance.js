@@ -199,7 +199,7 @@ router.get('/analyze', async (req, res) => {
     // Analyser chaque connexion
     for (const connection of connections) {
       try {
-        console.log(`➡️ Analyse de la connexion ${connection.name} (${connection.id})`);
+        // Analyse de la connexion
         
         let databases = [];
         
@@ -210,12 +210,12 @@ router.get('/analyze', async (req, res) => {
           databases = await dbConnector.getDatabases(connection);
         }
 
-        console.log(`  Bases trouvées pour ${connection.name}:`, databases);
+        // Bases trouvées
 
         // Analyser chaque base de données
         for (const dbName of databases) {
           try {
-            console.log(`    🔎 Analyse de la base ${dbName} sur ${connection.name}`);
+            // Analyse de la base
             
             // Obtenir les tables vides et heap tables avec des requêtes spécifiques
             let emptyTables = [];
@@ -374,10 +374,7 @@ router.get('/analyze', async (req, res) => {
       }
     }
 
-    console.log('🟢 Analyse terminée. Résumé:', {
-      emptyTables: results.emptyTables.length,
-      heapTables: results.heapTables.length
-    });
+      // Analyse terminée
 
     res.json({
       success: true,

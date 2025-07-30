@@ -98,10 +98,10 @@ const Maintenance = () => {
   const [dataLoading, setDataLoading] = useState(false);
   const [tableData, setTableData] = useState({ columns: [], data: [] });
   const [selectedTable, setSelectedTable] = useState(null);
-  const [dataPage, setDataPage] = useState(0);
-  const [dataRowsPerPage, setDataRowsPerPage] = useState(10);
   const [csvExportSuccess, setCsvExportSuccess] = useState(false);
   const [sqlCopySuccess, setSqlCopySuccess] = useState(false);
+  const [dataPage, setDataPage] = useState(0);
+  const [dataRowsPerPage, setDataRowsPerPage] = useState(10);
   
   // États pour l'analyse avancée
   const [analysisData, setAnalysisData] = useState({
@@ -491,7 +491,7 @@ const Maintenance = () => {
     const headers = columns.map(col => col.name).join(',');
     const rows = data.map(row => 
       columns.map(col => {
-        const value = row[col.name];
+        const value = row[col.key];
         if (value === null || value === undefined) return '';
         return `"${String(value).replace(/"/g, '""')}"`;
       }).join(',')
@@ -1017,7 +1017,43 @@ const Maintenance = () => {
           {activeTab === 0 && (
             <Card>
               <CardContent>
-                  <TableContainer component={Paper}>
+                <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                  <Typography variant="h6">
+                    Tables vides trouvées : {emptyTables.length}
+                  </Typography>
+                  <Box display="flex" gap={1}>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        const csvContent = generateCSV(
+                          [
+                            { name: 'Nom', key: 'table_name' },
+                            { name: 'Serveur', key: 'connection_name' },
+                            { name: 'Base de données', key: 'database_name' },
+                            { name: 'Schéma', key: 'schema_name' }
+                          ],
+                          emptyTables
+                        );
+                        const blob = new Blob([csvContent], { type: 'text/csv' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'tables_vides_maintenance.csv';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        setCsvExportSuccess(true);
+                        setTimeout(() => setCsvExportSuccess(false), 2000);
+                      }}
+                      disabled={emptyTables.length === 0}
+                      color={csvExportSuccess ? "success" : "primary"}
+                      variant={csvExportSuccess ? "contained" : "outlined"}
+                      startIcon={<CopyIcon />}
+                    >
+                      {csvExportSuccess ? "Exporté !" : "Export CSV"}
+                    </Button>
+                  </Box>
+                </Box>
+                <TableContainer component={Paper}>
                    <Table>
                      <TableHead>
                        <TableRow>
@@ -1147,14 +1183,49 @@ const Maintenance = () => {
           {activeTab === 1 && (
             <Card>
               <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Heap Tables
-                </Typography>
+                <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                  <Typography variant="h6">
+                    Heap Tables trouvées : {heapTables.length}
+                  </Typography>
+                  <Box display="flex" gap={1}>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        const csvContent = generateCSV(
+                          [
+                            { name: 'Nom', key: 'table_name' },
+                            { name: 'Serveur', key: 'connection_name' },
+                            { name: 'Base de données', key: 'database_name' },
+                            { name: 'Schéma', key: 'schema_name' },
+                            { name: 'Lignes', key: 'row_count' },
+                            { name: 'Taille (MB)', key: 'size_mb' },
+                            { name: 'Index Cluster', key: 'has_clustered_index' }
+                          ],
+                          heapTables
+                        );
+                        const blob = new Blob([csvContent], { type: 'text/csv' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'heap_tables_maintenance.csv';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        setCsvExportSuccess(true);
+                        setTimeout(() => setCsvExportSuccess(false), 2000);
+                      }}
+                      disabled={heapTables.length === 0}
+                      color={csvExportSuccess ? "success" : "primary"}
+                      variant={csvExportSuccess ? "contained" : "outlined"}
+                      startIcon={<CopyIcon />}
+                    >
+                      {csvExportSuccess ? "Exporté !" : "Export CSV"}
+                    </Button>
+                  </Box>
+                </Box>
                 <Typography variant="body2" color="text.secondary" paragraph>
                   Ces tables n'ont pas d'index cluster et peuvent bénéficier d'une optimisation.
                 </Typography>
-
-                                 <TableContainer component={Paper}>
+                <TableContainer component={Paper}>
                    <Table>
                      <TableHead>
                        <TableRow>
@@ -1620,6 +1691,7 @@ const Maintenance = () => {
                 disabled={tableData.data.length === 0}
                 color={csvExportSuccess ? "success" : "primary"}
                 variant={csvExportSuccess ? "contained" : "outlined"}
+                startIcon={<CopyIcon />}
               >
                 {csvExportSuccess ? "Exporté !" : "Export CSV"}
               </Button>

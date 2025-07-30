@@ -35,8 +35,12 @@ import {
   Storage as StorageIcon,
   Upload as UploadIcon,
   Key as KeyIcon,
+  KeyboardArrowDown as KeyboardArrowDownIcon,
+  KeyboardArrowUp as KeyboardArrowUpIcon,
 } from '@mui/icons-material';
 import { connectionsAPI } from '../services/api';
+import axios from 'axios';
+import * as XLSX from 'xlsx';
 
 const ConnectionForm = ({ open, onClose, connection = null, onSave }) => {
   const [formData, setFormData] = useState({
@@ -544,6 +548,308 @@ const ConnectionCard = ({ connection, onEdit, onDelete, onTest, onToggle }) => {
   );
 };
 
+const InformationsBloc = ({ connections }) => {
+  // On ne garde que les connexions actives
+  const activeConnections = connections.filter(conn => conn.enabled);
+  const [infos, setInfos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [shown, setShown] = useState(false);
+  const [expandedBases, setExpandedBases] = useState({}); // { [connectionId]: { [baseName]: bool } }
+
+  const toggleBase = (connectionId, baseName) => {
+    setExpandedBases(prev => ({
+      ...prev,
+      [connectionId]: {
+        ...(prev[connectionId] || {}),
+        [baseName]: !((prev[connectionId] || {})[baseName])
+      }
+    }));
+  };
+
+  const fetchInfos = () => {
+    setLoading(true);
+    setError(null);
+    Promise.all(
+      activeConnections.map(conn =>
+        axios.get(`/api/connections/${conn.id}/info`).then(r => ({ id: conn.id, data: r.data })).catch(e => ({ id: conn.id, error: e.message }))
+      )
+    )
+      .then(results => setInfos(results))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  const handleShow = () => {
+    setShown(true);
+    fetchInfos();
+  };
+
+  const exportTablesCSV = (info) => {
+    if (!info || !info.databases) return;
+    let csv = 'Base,Table,Schéma,Nombre de lignes,Taille (Mo)\n';
+    info.databases.forEach(base => {
+      base.tables.forEach(table => {
+        csv += `"${base.name}","${table.name}","${table.schema}",${table.row_count},${table.size_mb}\n`;
+      });
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tables_${info.connection.name}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportAllExcel = () => {
+    if (!infos || infos.length === 0) return;
+    const wb = XLSX.utils.book_new();
+
+    // --- Onglet Résumé ---
+    let resumeRows = [];
+    // En-tête
+    resumeRows.push([
+      'Serveur', 'Type', 'Version', 'Base', 'Volume (Mo)', 'Nombre de tables', 'Moy. variation datas quotidiennes'
+    ]);
+    infos.forEach((infoObj) => {
+      if (infoObj.error) return;
+      const info = infoObj.data;
+      info.databases.forEach(base => {
+        resumeRows.push([
+          info.connection.name,
+          info.connection.type,
+          info.version,
+          base.name,
+          Number(base.volume_mb).toFixed(2),
+          base.tables_count,
+          typeof base.avg_backup_variation_pourcent === 'number' ? base.avg_backup_variation_pourcent.toFixed(2) + ' %' : 'Non disponible'
+        ]);
+      });
+    });
+    const wsResume = XLSX.utils.aoa_to_sheet(resumeRows);
+    wsResume['!cols'] = [
+      { width: 25 }, // Serveur
+      { width: 12 }, // Type
+      { width: 15 }, // Version
+      { width: 25 }, // Base
+      { width: 15 }, // Volume
+      { width: 15 }, // Nb tables
+      { width: 30 }  // Variation
+    ];
+    XLSX.utils.book_append_sheet(wb, wsResume, 'Résumé');
+    
+    infos.forEach((infoObj) => {
+      if (infoObj.error) return;
+      const info = infoObj.data;
+      let rows = [];
+      
+      // Informations du serveur regroupées dans une seule cellule
+      const serverInfo = `Nom: ${info.connection.name}\r\nType: ${info.connection.type}\r\nVersion: ${info.version}\r\nNombre de bases: ${info.databases_count}\r\nVolume total: ${info.total_volume_mb} Mo`;
+      
+      // En-tête avec informations du serveur
+      rows.push([serverInfo, '']); // On met le texte dans A1, B1 vide
+      rows.push([]);
+      
+      // Pour chaque base, ajouter une ligne de résumé puis le tableau des tables
+      info.databases.forEach(base => {
+        // Ligne de résumé
+        const resume = `${base.name} : ${Number(base.volume_mb).toFixed(2)} Mo, ${base.tables_count} tables • Moy. variation datas quotidiennes : ${typeof base.avg_backup_variation_pourcent === 'number' ? base.avg_backup_variation_pourcent.toFixed(2) + ' %' : 'Non disponible'}`;
+        rows.push([resume]);
+        rows.push([]);
+        // En-tête colonnes des tables
+        rows.push(['Base', 'Table', 'Schéma', 'Nombre de lignes', 'Taille (Mo)']);
+        // Données des tables
+        base.tables.forEach(table => {
+          rows.push([
+            base.name,
+            table.name,
+            table.schema,
+            table.row_count,
+            table.size_mb
+          ]);
+        });
+        rows.push([]);
+      });
+      
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+
+      // Forcer wrapText sur A1
+      if (ws['A1']) {
+        ws['A1'].s = {
+          ...(ws['A1'].s || {}),
+          alignment: { wrapText: true, vertical: 'center' }
+        };
+      }
+      
+      // Styles pour rendre le fichier plus joli
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      
+      // Appliquer des styles à toutes les cellules
+      for (let R = range.s.r; R <= range.e.r; ++R) {
+        for (let C = range.s.c; C <= range.e.c; ++C) {
+          const cell_address = XLSX.utils.encode_cell({ r: R, c: C });
+          if (!ws[cell_address]) continue;
+          
+          // Style de base pour toutes les cellules
+          ws[cell_address].s = {
+            font: { name: 'Calibri', sz: 11 },
+            alignment: { vertical: 'center' },
+            border: {
+              top: { style: 'thin', color: { rgb: 'CCCCCC' } },
+              bottom: { style: 'thin', color: { rgb: 'CCCCCC' } },
+              left: { style: 'thin', color: { rgb: 'CCCCCC' } },
+              right: { style: 'thin', color: { rgb: 'CCCCCC' } }
+            }
+          };
+          // Forcer le retour à la ligne dans la cellule des infos serveur
+          if (R === 0 && C === 1) {
+            ws[cell_address].s = {
+              ...ws[cell_address].s,
+              alignment: { wrapText: true, vertical: 'center' }
+            };
+          }
+          
+          // Style spécial pour l'en-tête des informations du serveur
+          if (R === 0) {
+            ws[cell_address].s = {
+              ...ws[cell_address].s,
+              font: { name: 'Calibri', sz: 12, bold: true, color: { rgb: 'FFFFFF' } },
+              fill: { fgColor: { rgb: '4472C4' } },
+              alignment: { horizontal: 'center', vertical: 'center' }
+            };
+          }
+          
+          // Style pour les en-têtes des colonnes de tables
+          if (R >= 3) {
+            const baseStartRows = [];
+            let currentRow = 3;
+            info.databases.forEach(base => {
+              baseStartRows.push(currentRow);
+              currentRow += base.tables.length + 2; // +2 pour l'en-tête et la ligne vide
+            });
+            
+            if (baseStartRows.includes(R)) {
+              ws[cell_address].s = {
+                ...ws[cell_address].s,
+                font: { name: 'Calibri', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+                fill: { fgColor: { rgb: '70AD47' } },
+                alignment: { horizontal: 'center', vertical: 'center' }
+              };
+            }
+          }
+        }
+      }
+      
+      // Fusionner les cellules pour l'en-tête des informations du serveur
+      ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }
+      ];
+      
+      // Ajuster la largeur des colonnes
+      ws['!cols'] = [
+        { width: 25 }, // Colonne A
+        { width: 80 }, // Colonne B (plus large pour infos serveur)
+        { width: 20 }, // Colonne C (Base)
+        { width: 25 }, // Colonne D (Table)
+        { width: 15 }, // Colonne E (Schéma)
+        { width: 15 }, // Colonne F (Nombre de lignes)
+        { width: 15 }  // Colonne G (Taille)
+      ];
+      
+      // Ajuster la hauteur des lignes
+      ws['!rows'] = [];
+      for (let i = 0; i <= range.e.r; i++) {
+        ws['!rows'][i] = { hpt: i === 0 ? 30 : 20 }; // Plus grande hauteur pour l'en-tête
+      }
+      
+      XLSX.utils.book_append_sheet(wb, ws, info.connection.name.substring(0, 31)); // Excel limite à 31 caractères
+    });
+    
+    XLSX.writeFile(wb, 'informations_techniques_connexions.xlsx');
+  };
+
+  if (!shown) {
+    return (
+      <Box my={4} textAlign="center">
+        <Button variant="contained" onClick={handleShow}>
+          Afficher les informations techniques
+        </Button>
+      </Box>
+    );
+  }
+
+  if (loading) return <Box my={4}><LinearProgress /><Typography>Chargement des informations techniques...</Typography></Box>;
+  if (error) return <Alert severity="error">Erreur lors du chargement des informations : {error}</Alert>;
+  if (!infos || infos.length === 0) return null;
+
+  return (
+    <Box my={4}>
+      <Box display="flex" justifyContent="flex-end" mb={2}>
+        <Button variant="contained" color="success" onClick={exportAllExcel} disabled={!infos || infos.length === 0}>
+          Exporter tout (Excel)
+        </Button>
+      </Box>
+      <Typography variant="h5" gutterBottom>Informations techniques</Typography>
+      {infos.map((infoObj, idx) => {
+        if (infoObj.error) {
+          return <Alert severity="error" key={infoObj.id}>Erreur pour la connexion {infoObj.id} : {infoObj.error}</Alert>;
+        }
+        const info = infoObj.data;
+        return (
+          <Card key={info.connection.id} sx={{ mb: 3 }}>
+            <CardContent>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="h6" gutterBottom>{info.connection.name} ({info.connection.type})</Typography>
+                <Button size="small" variant="outlined" onClick={() => exportTablesCSV(info)}>
+                  Exporter (CSV)
+                </Button>
+              </Box>
+              <Typography variant="body2">Version : {info.version}</Typography>
+              <Typography variant="body2">Nombre de bases : {info.databases_count}</Typography>
+              <Typography variant="body2">Volume total : {info.total_volume_mb} Mo</Typography>
+              {info.databases && info.databases.length > 0 && (
+                <Box mt={2}>
+                  <Typography variant="subtitle1">Bases :</Typography>
+                  <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
+                    {info.databases.map(base => {
+                      const expanded = expandedBases[info.connection.id]?.[base.name] || false;
+                      return (
+                        <li key={base.name}>
+                          <Box display="flex" alignItems="center">
+                            <IconButton size="small" onClick={() => toggleBase(info.connection.id, base.name)}>
+                              {expanded ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
+                            </IconButton>
+                            <Box flexGrow={1}>
+                              <strong>{base.name}</strong> : {base.volume_mb} Mo, {base.tables_count} tables
+                              <span> • Moy. variation datas quotidiennes : {typeof base.avg_backup_variation_pourcent === 'number' ? (base.avg_backup_variation_pourcent).toFixed(2) + ' %' : 'Non disponible'}</span>
+                            </Box>
+                          </Box>
+                          {expanded && base.tables && base.tables.length > 0 && (
+                            <ul style={{ marginLeft: 32 }}>
+                              {base.tables.map(table => (
+                                <li key={table.name + '-' + table.schema}>
+                                  {table.name} (schéma : {table.schema}) : {table.row_count} lignes, {table.size_mb} Mo
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </Box>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })}
+    </Box>
+  );
+};
+
 const Connections = () => {
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -616,23 +922,31 @@ const Connections = () => {
       )}
 
       <Grid container spacing={3}>
-        {connections.map((connection) => (
-          <Grid item xs={12} md={6} lg={4} key={connection.id}>
-            <ConnectionCard
-              connection={connection}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
-              onToggle={async (id) => {
-                try {
-                  await connectionsAPI.toggle(id);
-                  fetchConnections();
-                } catch (error) {
-                  console.error('Erreur lors du basculement:', error);
-                }
-              }}
-            />
-          </Grid>
-        ))}
+        {connections
+          .sort((a, b) => {
+            // Trier par statut : activées en premier, puis par nom
+            if (a.enabled !== b.enabled) {
+              return b.enabled ? 1 : -1; // Activées en premier
+            }
+            return a.name.localeCompare(b.name); // Puis par ordre alphabétique
+          })
+          .map((connection) => (
+            <Grid item xs={12} md={6} lg={4} key={connection.id}>
+              <ConnectionCard
+                connection={connection}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onToggle={async (id) => {
+                  try {
+                    await connectionsAPI.toggle(id);
+                    fetchConnections();
+                  } catch (error) {
+                    console.error('Erreur lors du basculement:', error);
+                  }
+                }}
+              />
+            </Grid>
+          ))}
       </Grid>
 
       {connections.length === 0 && !loading && (
@@ -645,6 +959,9 @@ const Connections = () => {
           </Typography>
         </Box>
       )}
+
+      {/* Bloc Informations techniques */}
+      <InformationsBloc connections={connections} />
 
       <ConnectionForm
         open={dialogOpen}
