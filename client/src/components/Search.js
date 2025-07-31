@@ -1,65 +1,54 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Box,
-  Typography,
-  TextField,
-  Button,
-  Card,
-  CardContent,
-  Grid,
-  Chip,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  Checkbox,
-  FormControlLabel,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  TableSortLabel,
-  Paper,
-  Alert,
-  LinearProgress,
-  IconButton,
-  Tooltip,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Divider,
-  TablePagination
+  Box, Typography, TextField, Button, Card, CardContent, Grid, 
+  FormControl, InputLabel, Select, MenuItem, Chip, CircularProgress,
+  Alert, Table, TableBody, TableCell, TableContainer, TableHead, 
+  TableRow, Paper, IconButton, Tooltip, Dialog, DialogTitle, 
+  DialogContent, DialogActions, DialogContentText, TextareaAutosize,
+  FormControlLabel, Checkbox, Accordion, AccordionSummary, 
+  AccordionDetails, TablePagination, Snackbar, LinearProgress,
+  TableSortLabel, List, ListItem, ListItemIcon, ListItemText, Divider
 } from '@mui/material';
-import {
-  Search as SearchIcon,
-  ExpandMore as ExpandMoreIcon,
+import { searchAPI, connectionsAPI, commentsAPI } from '../services/api';
+import { 
+  Search as SearchIcon, 
+  ContentCopy as CopyIcon,
+  Download as DownloadIcon,
+  Visibility as ViewIcon,
+  TableChart as TableIcon,
+  Code as CodeIcon,
   Comment as CommentIcon,
+  Link as LinkIcon,
+  DataUsage as DataIcon,
+  ExpandMore as ExpandMoreIcon,
+  Sort as SortIcon,
+  Storage as ProcedureIcon,
+  Functions as FunctionIcon,
   Storage as StorageIcon,
   Storage as DatabaseIcon,
-  TableChart as TableIcon,
-  Visibility as ViewIcon,
-  Functions as FunctionIcon,
-  Code as ProcedureIcon,
-  Code as CodeIcon,
   Code as DdlIcon,
-  ContentCopy as CopyIcon,
-  AccountTree as DependenciesIcon,
-  TableRows as DataIcon
+  AccountTree as DependenciesIcon
 } from '@mui/icons-material';
-import { searchAPI, connectionsAPI, commentsAPI } from '../services/api';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import logger from '../utils/logger';
+
+// Hook personnalisé pour le debouncing
+const useDebounce = (value, delay) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+};
 
 const Search = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -103,6 +92,9 @@ const Search = () => {
   const [dataPage, setDataPage] = useState(0);
   const [dataRowsPerPage, setDataRowsPerPage] = useState(10);
   const fetchDbRequestId = useRef(0);
+  
+  // Debouncing pour la recherche automatique
+  const debouncedSearchTerm = useDebounce(searchTerm, 500);
 
   const objectTypes = [
     { value: 'TABLE', label: 'Tables', icon: <TableIcon /> },
@@ -151,8 +143,12 @@ const Search = () => {
     }
   };
 
-  const handleSearch = async () => {
-    if (!searchTerm.trim()) return;
+  // Recherche optimisée avec useCallback
+  const handleSearch = useCallback(async (searchTermToUse = searchTerm) => {
+    if (!searchTermToUse.trim()) {
+      setResults([]);
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -160,7 +156,7 @@ const Search = () => {
 
     try {
       const searchData = {
-        searchTerm: searchTerm.trim(),
+        searchTerm: searchTermToUse.trim(),
         connectionId: selectedConnection || null,
         databaseName: selectedDatabase || null,
         searchMode: searchMode,
@@ -185,7 +181,16 @@ const Search = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchTerm, selectedConnection, selectedDatabase, searchMode, advancedMode, selectedObjectTypes]);
+
+  // Recherche automatique avec debouncing
+  useEffect(() => {
+    if (debouncedSearchTerm.trim().length >= 2) {
+      handleSearch(debouncedSearchTerm);
+    } else if (debouncedSearchTerm.trim().length === 0) {
+      setResults([]);
+    }
+  }, [debouncedSearchTerm, handleSearch]);
 
   const handleObjectTypeChange = (type) => {
     setSelectedObjectTypes(prev => 
@@ -370,10 +375,29 @@ const Search = () => {
     return existingComments.has(key);
   };
 
-  const loadExistingComments = async (results) => {
+  // Cache pour les commentaires
+  const commentsCache = useRef(new Map());
+  
+  const loadExistingComments = useCallback(async (results) => {
+    if (!results || results.length === 0) return;
+
     const commentsMap = new Map();
+    const uncachedResults = [];
     
+    // Vérifier le cache d'abord
     for (const result of results) {
+      const cacheKey = `${result.connection_id}-${result.database_name}-${result.object_type}-${result.object_name}-${result.schema_name}`;
+      const cachedComment = commentsCache.current.get(cacheKey);
+      
+      if (cachedComment) {
+        commentsMap.set(cacheKey, cachedComment);
+      } else {
+        uncachedResults.push({ result, cacheKey });
+      }
+    }
+    
+    // Charger uniquement les commentaires non cachés en parallèle
+    const promises = uncachedResults.map(async ({ result, cacheKey }) => {
       try {
         const response = await commentsAPI.getByObject(
           result.connection_id,
@@ -384,16 +408,20 @@ const Search = () => {
         );
         
         if (response.data && response.data.length > 0) {
-          const key = `${result.connection_id}-${result.database_name}-${result.object_type}-${result.object_name}-${result.schema_name}`;
-          commentsMap.set(key, true);
+          const comment = response.data[0];
+          commentsMap.set(cacheKey, comment);
+          commentsCache.current.set(cacheKey, comment);
         }
-      } catch (error) {
-        // Ignorer les erreurs pour les objets sans commentaires
+      } catch (err) {
+        console.warn('Erreur lors du chargement du commentaire:', err);
       }
-    }
+    });
+    
+    // Attendre tous les chargements en parallèle
+    await Promise.all(promises);
     
     setExistingComments(commentsMap);
-  };
+  }, []);
 
   const handleCopyDDL = async () => {
     try {

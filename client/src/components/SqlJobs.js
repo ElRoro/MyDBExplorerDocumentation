@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Box, Typography, Card, CardContent, Grid, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, 
   TableSortLabel, FormControl, InputLabel, Select, MenuItem, Chip, CircularProgress, TextField, Button,
@@ -6,6 +6,7 @@ import {
   DialogActions, DialogContentText, Divider, Menu, ListItemIcon, ListItemText, Tabs, Tab, Accordion, 
   AccordionSummary, AccordionDetails, List, ListItem, ListItemText as MuiListItemText
 } from '@mui/material';
+import { FixedSizeList as VirtualList } from 'react-window';
 import { jobsAPI, connectionsAPI, commentsAPI } from '../services/api';
 import logger from '../utils/logger';
 import InfoIcon from '@mui/icons-material/Info';
@@ -103,7 +104,7 @@ function parseSsisCommand(command) {
   return { packagePath, params };
 }
 
-function Row({ job, connectionName, onJobAction }) {
+function Row({ job, connectionName, onJobAction, showServerColumn }) {
   const [open, setOpen] = useState(false);
   const [steps, setSteps] = useState([]);
   const [loadingSteps, setLoadingSteps] = useState(false);
@@ -137,14 +138,28 @@ function Row({ job, connectionName, onJobAction }) {
     });
   };
 
-  const fetchSteps = async () => {
+  // Cache pour les steps
+  const stepsCache = useRef(new Map());
+  
+  const fetchSteps = useCallback(async () => {
+    const cacheKey = `${job.connectionId}-${job.id}`;
+    const cachedSteps = stepsCache.current.get(cacheKey);
+    
+    if (cachedSteps) {
+      setSteps(cachedSteps);
+      setStepsLoaded(true);
+      return;
+    }
+    
     setLoadingSteps(true);
     setError(null);
     try {
       const response = await jobsAPI.getSteps(job.connectionId, job.id);
       if (Array.isArray(response.data)) {
         setSteps(response.data);
-        setStepsLoaded(true); // Steps chargés
+        setStepsLoaded(true);
+        // Mettre en cache
+        stepsCache.current.set(cacheKey, response.data);
       } else if (response.data.error) {
         setError(response.data.error);
         setSteps([]);
@@ -159,7 +174,7 @@ function Row({ job, connectionName, onJobAction }) {
     } finally {
       setLoadingSteps(false);
     }
-  };
+  }, [job.connectionId, job.id]);
 
   const fetchStepDetails = async (step) => {
     setSelectedStep(step);
@@ -359,6 +374,13 @@ function Row({ job, connectionName, onJobAction }) {
             )}
           </Box>
         </TableCell>
+        {showServerColumn && (
+          <TableCell>
+            <Typography noWrap variant="body2" color="textSecondary">
+              {connectionName}
+            </Typography>
+          </TableCell>
+        )}
         <TableCell>
           <Chip 
             label={job.enabled ? 'Oui' : 'Non'} 
@@ -1036,24 +1058,29 @@ const SqlJobs = () => {
   const categories = [...new Set(jobs.map(job => job.category))];
   const servers = Object.values(connections).filter(conn => conn.type === 'sqlserver');
 
-  const filteredJobs = jobs.filter(job => {
-    if (filterStatus && job.lastRunStatus !== filterStatus) return false;
-    if (filterEnabled && String(job.enabled) !== filterEnabled) return false;
-    if (filterCategory && job.category !== filterCategory) return false;
-    if (filterServer && job.connectionId !== filterServer) return false;
-    if (filterRunning && !job.isCurrentlyRunning) return false;
-    if (search && !job.name.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  // Optimisation du filtrage et tri avec useMemo
+  const filteredJobs = useMemo(() => {
+    return jobs.filter(job => {
+      if (filterStatus && job.lastRunStatus !== filterStatus) return false;
+      if (filterEnabled && String(job.enabled) !== filterEnabled) return false;
+      if (filterCategory && job.category !== filterCategory) return false;
+      if (filterServer && job.connectionId !== filterServer) return false;
+      if (filterRunning && !job.isCurrentlyRunning) return false;
+      if (search && !job.name.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  }, [jobs, filterStatus, filterEnabled, filterCategory, filterServer, filterRunning, search]);
 
-  const sortedJobs = filteredJobs.sort((a, b) => {
-    let aValue = a[orderBy];
-    let bValue = b[orderBy];
-    if (aValue === undefined) aValue = '';
-    if (bValue === undefined) bValue = '';
-    if (order === 'asc') return String(aValue).localeCompare(String(bValue));
-    return String(bValue).localeCompare(String(aValue));
-  });
+  const sortedJobs = useMemo(() => {
+    return filteredJobs.sort((a, b) => {
+      let aValue = a[orderBy];
+      let bValue = b[orderBy];
+      if (aValue === undefined) aValue = '';
+      if (bValue === undefined) bValue = '';
+      if (order === 'asc') return String(aValue).localeCompare(String(bValue));
+      return String(bValue).localeCompare(String(aValue));
+    });
+  }, [filteredJobs, orderBy, order]);
 
   return (
     <Box sx={{ width: '100%' }}>
@@ -1270,7 +1297,7 @@ const SqlJobs = () => {
             <TableHead>
               <TableRow>
                 <TableCell padding="checkbox" sx={{ width: '48px' }} />
-                <TableCell sx={{ width: '35%' }}>
+                <TableCell sx={{ width: filterServer ? '35%' : '25%' }}>
                   <TableSortLabel
                     active={orderBy === 'name'}
                     direction={orderBy === 'name' ? order : 'asc'}
@@ -1279,6 +1306,17 @@ const SqlJobs = () => {
                     Nom
                   </TableSortLabel>
                 </TableCell>
+                {!filterServer && (
+                  <TableCell sx={{ width: '15%' }}>
+                    <TableSortLabel
+                      active={orderBy === 'connectionId'}
+                      direction={orderBy === 'connectionId' ? order : 'asc'}
+                      onClick={() => handleSort('connectionId')}
+                    >
+                      Serveur
+                    </TableSortLabel>
+                  </TableCell>
+                )}
                 <TableCell sx={{ width: '8%' }}>
                   <TableSortLabel
                     active={orderBy === 'enabled'}
@@ -1325,11 +1363,12 @@ const SqlJobs = () => {
                   job={job}
                   connectionName={connections[job.connectionId]?.name || connections[job.connectionId]?.host || job.connectionId}
                   onJobAction={fetchJobs}
+                  showServerColumn={!filterServer}
                 />
               ))}
               {sortedJobs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} align="center">Aucun job trouvé</TableCell>
+                  <TableCell colSpan={filterServer ? 8 : 9} align="center">Aucun job trouvé</TableCell>
                 </TableRow>
               )}
             </TableBody>
