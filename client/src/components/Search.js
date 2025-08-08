@@ -145,7 +145,9 @@ const Search = () => {
 
   // Recherche optimisée avec useCallback
   const handleSearch = useCallback(async (searchTermToUse = searchTerm) => {
-    if (!searchTermToUse.trim()) {
+    // Ensure searchTermToUse is a string before calling trim()
+    const searchTermString = String(searchTermToUse || '');
+    if (!searchTermString.trim()) {
       setResults([]);
       return;
     }
@@ -156,7 +158,7 @@ const Search = () => {
 
     try {
       const searchData = {
-        searchTerm: searchTermToUse.trim(),
+        searchTerm: searchTermString.trim(),
         connectionId: selectedConnection || null,
         databaseName: selectedDatabase || null,
         searchMode: searchMode,
@@ -686,7 +688,7 @@ const Search = () => {
                 label="Terme de recherche"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch(searchTerm)}
                 placeholder="Nom de table, procédure, fonction..."
               />
             </Grid>
@@ -735,7 +737,7 @@ const Search = () => {
                 fullWidth
                 variant="contained"
                 startIcon={<SearchIcon />}
-                onClick={handleSearch}
+                onClick={() => handleSearch(searchTerm)}
                 disabled={loading || !searchTerm.trim()}
               >
                 {loading ? 'Recherche...' : 'Rechercher'}

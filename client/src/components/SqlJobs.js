@@ -955,6 +955,7 @@ const SqlJobs = () => {
   const [loading, setLoading] = useState(false); // false par défaut
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const [hasInitialData, setHasInitialData] = useState(false); // Pour savoir si des données ont été chargées
   // Ajouter les états pour le tri des jobs
   const [orderBy, setOrderBy] = useState('name');
   const [order, setOrder] = useState('asc');
@@ -1000,6 +1001,7 @@ const SqlJobs = () => {
       });
       setJobs(allJobs);
       setHasLoaded(true); // On note que la liste a été chargée au moins une fois
+      setHasInitialData(true); // On note que des données ont été chargées
     } catch (err) {
       console.error('Erreur lors du chargement des jobs:', err);
       let errorMessage = 'Erreur lors du chargement des jobs SQL';
@@ -1041,10 +1043,10 @@ const SqlJobs = () => {
     fetchConnections();
   }, []);
 
-  // Chargement initial des jobs
-  useEffect(() => {
-    fetchJobs();
-  }, []);
+  // Chargement initial des jobs - SUPPRIMÉ pour éviter le chargement automatique
+  // useEffect(() => {
+  //   fetchJobs();
+  // }, []);
 
   // Les filtres s'appliquent maintenant uniquement sur les données en mémoire
   // Pas de rechargement à chaque changement de filtre
@@ -1257,14 +1259,15 @@ const SqlJobs = () => {
             </Grid>
             <Grid item xs={12} md={1}>
               <Button 
-                variant="outlined" 
+                variant={hasInitialData ? "outlined" : "contained"}
+                color={hasInitialData ? "primary" : "primary"}
                 fullWidth 
                 onClick={fetchJobs} 
                 disabled={refreshing}
-                startIcon={refreshing ? <CircularProgress size={16} /> : null}
-                title="Recharger les données depuis le serveur"
+                startIcon={refreshing ? <CircularProgress size={16} /> : <AutorenewIcon />}
+                title={hasInitialData ? "Recharger les données depuis le serveur" : "Charger les jobs SQL"}
               >
-                Rafraîchir
+                {hasInitialData ? "Rafraîchir" : "Charger"}
               </Button>
             </Grid>
           </Grid>
@@ -1274,6 +1277,22 @@ const SqlJobs = () => {
       {loading ? (
         <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
           <CircularProgress />
+        </Box>
+      ) : !hasInitialData ? (
+        <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" minHeight={200}>
+          <Typography variant="h6" color="textSecondary" gutterBottom>
+            Aucune donnée chargée
+          </Typography>
+          <Typography variant="body2" color="textSecondary" textAlign="center" sx={{ mb: 2 }}>
+            Cliquez sur le bouton "Rafraîchir" pour charger les jobs SQL de tous les serveurs
+          </Typography>
+          <Button 
+            variant="contained" 
+            onClick={fetchJobs}
+            startIcon={<AutorenewIcon />}
+          >
+            Charger les jobs
+          </Button>
         </Box>
       ) : (
         <>
