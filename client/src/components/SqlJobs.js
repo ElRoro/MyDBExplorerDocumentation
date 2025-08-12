@@ -6,6 +6,7 @@ import {
   DialogActions, DialogContentText, Divider, Menu, ListItemIcon, ListItemText, Tabs, Tab, Accordion, 
   AccordionSummary, AccordionDetails, List, ListItem, ListItemText as MuiListItemText
 } from '@mui/material';
+import { FileDownload as FileDownloadIcon } from '@mui/icons-material';
 import { FixedSizeList as VirtualList } from 'react-window';
 import { jobsAPI, connectionsAPI, commentsAPI } from '../services/api';
 import logger from '../utils/logger';
@@ -109,14 +110,15 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
   const [steps, setSteps] = useState([]);
   const [loadingSteps, setLoadingSteps] = useState(false);
   const [error, setError] = useState(null);
-  const [actionError, setActionError] = useState(null);  // Nouvel état pour les erreurs d'action
+  const [actionError, setActionError] = useState(null);
+  const [actionSuccess, setActionSuccess] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
   const [comment, setComment] = useState('');
   const [loadingComment, setLoadingComment] = useState(false);
   const [startMenuAnchor, setStartMenuAnchor] = useState(null);
   const [existingComment, setExistingComment] = useState(null);
-  const [stepsLoaded, setStepsLoaded] = useState(false); // Ajouté pour éviter de recharger inutilement
+  const [stepsLoaded, setStepsLoaded] = useState(false);
   const [stepDetailsDialogOpen, setStepDetailsDialogOpen] = useState(false);
   const [selectedStep, setSelectedStep] = useState(null);
   const [stepDetails, setStepDetails] = useState(null);
@@ -228,19 +230,41 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
     logger.ui('handleJobAction appelé', { action, stepId, job });
     setActionLoading(true);
     setActionError(null);  // Réinitialiser l'erreur
+    setActionSuccess(null); // Réinitialiser le message de succès
     try {
+      let actionMessage = '';
       switch (action) {
         case 'start':
           await jobsAPI.startJob(job.connectionId, job.id, stepId);
+          actionMessage = stepId 
+            ? `Le job "${job.name}" a été démarré à l'étape ${stepId}`
+            : `Le job "${job.name}" a été démarré`;
+          job.isCurrentlyRunning = true;
           break;
         case 'stop':
           await jobsAPI.stopJob(job.connectionId, job.id);
+          actionMessage = `Le job "${job.name}" a été arrêté`;
+          job.isCurrentlyRunning = false;
           break;
         case 'toggle':
           await jobsAPI.toggleJob(job.connectionId, job.id, !job.enabled);
+          actionMessage = !job.enabled 
+            ? `Le job "${job.name}" a été activé`
+            : `Le job "${job.name}" a été désactivé`;
+          job.enabled = !job.enabled;
           break;
       }
-      if (onJobAction) onJobAction();
+      
+      // Mettre à jour le statut du job
+      try {
+        const status = await jobsAPI.getStatus(job.connectionId, job.id);
+        Object.assign(job, status);
+      } catch (err) {
+        console.error('Erreur lors de la mise à jour du statut:', err);
+      }
+
+      setActionSuccess(actionMessage);
+      setTimeout(() => setActionSuccess(null), 5000);
     } catch (err) {
       console.error(`Erreur lors de l'action ${action} sur le job:`, err);
       const errorMessage = err.response?.data?.error || err.message || `Impossible d'exécuter l'action ${action}`;
@@ -499,6 +523,21 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                 }}
               >
                 {actionError}
+              </Alert>
+            )}
+            {actionSuccess && (
+              <Alert 
+                severity="success"
+                size="small"
+                sx={{ 
+                  py: 0,
+                  '& .MuiAlert-message': { 
+                    padding: '2px 0',
+                    fontSize: '0.75rem'
+                  }
+                }}
+              >
+                {actionSuccess}
               </Alert>
             )}
             {actionLoading && (
@@ -1084,6 +1123,52 @@ const SqlJobs = () => {
     });
   }, [filteredJobs, orderBy, order]);
 
+  const exportToCSV = () => {
+    // Préparer les en-têtes
+    const headers = [
+      'Nom',
+      'Serveur',
+      'Activé',
+      'Statut',
+      'Dernière exécution',
+      'Durée dernière exécution',
+      'Prochaine exécution',
+      'Catégorie',
+      'Description'
+    ];
+
+    // Préparer les données
+    const csvData = sortedJobs.map(job => [
+      job.name,
+      connections[job.connectionId]?.name || connections[job.connectionId]?.host || job.connectionId,
+      job.enabled ? 'Oui' : 'Non',
+      job.lastRunStatus,
+      `${job.lastRunDate} ${job.lastRunTime}`,
+      job.lastRunDuration || '',
+      job.nextRunDate === 'Non planifié' ? 'Non planifié' : `${job.nextRunDate} ${job.nextRunTime}`,
+      job.category || '',
+      job.description || ''
+    ]);
+
+    // Convertir en format CSV
+    const csvContent = [
+      headers.join(';'),
+      ...csvData.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(';'))
+    ].join('\n');
+
+    // Créer le Blob et le lien de téléchargement
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    // Configurer et déclencher le téléchargement
+    link.setAttribute('href', url);
+    link.setAttribute('download', `sql_jobs_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
       <style>
@@ -1273,6 +1358,19 @@ const SqlJobs = () => {
           </Grid>
         </CardContent>
       </Card>
+      
+      {hasInitialData && sortedJobs.length > 0 && (
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 2, mb: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<FileDownloadIcon />}
+            onClick={exportToCSV}
+            size="small"
+          >
+            Exporter les résultats en CSV
+          </Button>
+        </Box>
+      )}
       
       {loading ? (
         <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>

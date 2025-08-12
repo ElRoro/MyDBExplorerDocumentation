@@ -20,6 +20,7 @@ app.use('/api/maintenance', require('./routes/maintenance'));
 app.use('/api/performance', require('./routes/performance'));
 app.use('/api/analysis', require('./routes/analysis'));
 app.use('/api/jobs', require('./routes/jobs'));
+app.use('/api/notes', require('./routes/notes'));
 
 // Servir les fichiers statiques du frontend en production
 if (process.env.NODE_ENV === 'production') {

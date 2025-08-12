@@ -4,7 +4,7 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 20000, // 20 secondes de timeout
+  timeout: 120000, // 2 minutes de timeout
   headers: {
     'Content-Type': 'application/json',
   },
@@ -80,6 +80,7 @@ export const databasesAPI = {
 
 export const jobsAPI = {
   getAll: () => api.get('/jobs'),
+  getStatus: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/status`),
   getSteps: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/steps`),
   getStepDetails: (connectionId, jobId, stepId) => api.get(`/jobs/${connectionId}/${jobId}/steps/${stepId}/details`),
   updateStepCommand: (connectionId, jobId, stepId, command) => api.put(`/jobs/${connectionId}/${jobId}/steps/${stepId}/command`, { command }),

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import NotificationCenter from './components/NotificationCenter';
 import {
   Box,
   AppBar,
@@ -13,6 +14,8 @@ import {
   IconButton,
   useTheme,
   useMediaQuery,
+  Fab,
+  Tooltip,
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -24,6 +27,8 @@ import {
   Schedule as ScheduleIcon,
   DataObject as DataObjectIcon,
   Timer as TimerIcon,
+  Note as NoteIcon,
+  Add as AddIcon,
 } from '@mui/icons-material';
 
 import Connections from './components/Connections';
@@ -31,6 +36,7 @@ import Search from './components/Search';
 import Comments from './components/Comments';
 import Maintenance from './components/Maintenance';
 import SqlJobs from './components/SqlJobs';
+import Notes from './components/Notes';
 
 const drawerWidth = 240;
 
@@ -38,9 +44,11 @@ function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const navigate = useNavigate();
 
   const menuItems = [
     { text: 'Recherche', icon: <SearchIcon />, path: '/' },
+    { text: 'Notes', icon: <NoteIcon />, path: '/notes' },
     { text: 'Commentaires', icon: <CommentIcon />, path: '/comments' },
     { text: 'SQL Jobs', icon: <TimerIcon />, path: '/jobs' },
     { text: 'Maintenance', icon: <BuildIcon />, path: '/maintenance' },
@@ -49,6 +57,11 @@ function App() {
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
+  };
+
+  const handleAddNote = () => {
+    // Naviguer vers la page des notes avec un paramètre pour ouvrir le dialogue
+    navigate('/notes?action=new');
   };
 
   const drawer = (
@@ -97,9 +110,10 @@ function App() {
           >
             <MenuIcon />
           </IconButton>
-          <Typography variant="h6" noWrap component="div">
+          <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
             Documentation de Bases de Données
           </Typography>
+          <NotificationCenter />
         </Toolbar>
       </AppBar>
 
@@ -148,10 +162,27 @@ function App() {
           <Route path="/comments" element={<Comments />} />
           <Route path="/maintenance" element={<Maintenance />} />
           <Route path="/jobs" element={<SqlJobs />} />
+          <Route path="/notes" element={<Notes />} />
         </Routes>
+
+        {/* Bouton flottant global pour ajouter une note */}
+        <Tooltip title="Ajouter une note" placement="left">
+          <Fab
+            color="primary"
+            sx={{
+              position: 'fixed',
+              bottom: 32,
+              right: 32,
+              zIndex: (theme) => theme.zIndex.drawer + 2,
+            }}
+            onClick={handleAddNote}
+          >
+            <AddIcon />
+          </Fab>
+        </Tooltip>
       </Box>
     </Box>
   );
 }
 
-export default App; 
+export default App;

@@ -446,6 +446,104 @@ router.get('/', async (req, res) => {
   });
 });
 
+// GET /api/jobs/:connectionId/:jobId/status
+router.get('/:connectionId/:jobId/status', async (req, res) => {
+  const { connectionId, jobId } = req.params;
+  
+  getActiveConnections(async (err, activeConnections) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const connection = activeConnections.find(conn => conn.id === connectionId);
+    if (!connection) {
+      return res.status(404).json({ error: 'Connexion non trouvée' });
+    }
+
+    try {
+      const config = {
+        server: connection.host,
+        port: connection.port,
+        user: connection.username,
+        password: connection.password,
+        database: connection.database || 'msdb',
+        options: {
+          encrypt: false,
+          trustServerCertificate: true
+        }
+      };
+
+      const pool = await sql.connect(config);
+      
+      // Requête pour obtenir le statut actuel du job
+      const statusQuery = `
+        SELECT 
+          j.enabled,
+          CASE 
+            WHEN ja.run_requested_date IS NOT NULL AND ja.stop_execution_date IS NULL 
+            AND ja.session_id = (SELECT MAX(session_id) FROM msdb.dbo.sysjobactivity) 
+            THEN 1 
+            ELSE 0 
+          END as is_running,
+          h.run_status,
+          h.run_duration,
+          h.run_date,
+          h.run_time,
+          h.message,
+          CASE 
+            WHEN h.run_status = 1 THEN 'Succès'
+            WHEN h.run_status = 0 THEN 'Échec'
+            WHEN h.run_status = 2 THEN 'Nouvelle tentative'
+            WHEN h.run_status = 3 THEN 'Annulé'
+            WHEN h.run_status = 4 THEN 'En cours'
+            ELSE 'Inconnu'
+          END as last_run_status_desc,
+          s.next_run_date,
+          s.next_run_time
+        FROM msdb.dbo.sysjobs j
+        LEFT JOIN msdb.dbo.sysjobactivity ja ON j.job_id = ja.job_id
+        LEFT JOIN (
+          SELECT job_id, run_status, run_duration, run_date, run_time, message,
+            ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY run_date DESC, run_time DESC) as rn
+          FROM msdb.dbo.sysjobhistory
+          WHERE step_id = 0
+        ) h ON j.job_id = h.job_id AND h.rn = 1
+        LEFT JOIN (
+          SELECT job_id, next_run_date, next_run_time,
+            ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY next_run_date ASC, next_run_time ASC) as schedule_rn
+          FROM msdb.dbo.sysjobschedules js
+          JOIN msdb.dbo.sysschedules s ON js.schedule_id = s.schedule_id
+          WHERE next_run_date >= CONVERT(int, CONVERT(varchar(8), GETDATE(), 112))
+        ) s ON j.job_id = s.job_id AND s.schedule_rn = 1
+        WHERE j.job_id = @jobId`;
+
+      const result = await pool.request()
+        .input('jobId', sql.UniqueIdentifier, jobId)
+        .query(statusQuery);
+
+      await pool.close();
+
+      if (!result.recordset || result.recordset.length === 0) {
+        return res.status(404).json({ error: 'Job non trouvé' });
+      }
+
+      const job = result.recordset[0];
+      res.json({
+        enabled: job.enabled === 1,
+        isCurrentlyRunning: job.is_running === 1,
+        lastRunStatus: job.last_run_status_desc,
+        lastRunDuration: formatDuration(job.run_duration),
+        lastRunDate: formatSqlDate(job.run_date),
+        lastRunTime: formatSqlTime(job.run_time),
+        lastRunMessage: job.message,
+        nextRunDate: job.next_run_date ? formatSqlDate(job.next_run_date) : 'Non planifié',
+        nextRunTime: job.next_run_time ? formatSqlTime(job.next_run_time) : ''
+      });
+    } catch (error) {
+      console.error('Erreur lors de la récupération du statut du job:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+});
+
 // GET /api/jobs/:connectionId/:jobId/steps
 router.get('/:connectionId/:jobId/steps', async (req, res) => {
   const { connectionId, jobId } = req.params;
