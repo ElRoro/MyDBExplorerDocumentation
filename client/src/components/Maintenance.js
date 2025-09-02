@@ -56,7 +56,8 @@ import {
   Comment as CommentIcon,
   TrendingUp as TrendingUpIcon,
   Lock as LockIcon,
-  Backup as BackupIcon
+  Backup as BackupIcon,
+  Build as BuildIcon
 } from '@mui/icons-material';
 import { connectionsAPI, commentsAPI, searchAPI } from '../services/api';
 import axios from 'axios';
@@ -135,7 +136,7 @@ const Maintenance = () => {
 
   const fetchConnections = async () => {
     try {
-      const response = await connectionsAPI.getActive();
+      const response = await connectionsAPI.getActiveConnections();
       setConnections(response.data);
     } catch (err) {
       setError('Erreur lors du chargement des connexions');
@@ -909,9 +910,12 @@ const Maintenance = () => {
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Maintenance
-      </Typography>
+      <Box display="flex" alignItems="center" gap={1} mb={2}>
+        <BuildIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+        <Typography variant="h5" component="h1">
+          Maintenance
+        </Typography>
+      </Box>
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Grid container spacing={2} alignItems="center">

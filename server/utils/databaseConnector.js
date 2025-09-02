@@ -7,6 +7,129 @@ const logger = require('./logger');
 const dbPath = path.join(__dirname, '../database/dbexplorer.sqlite');
 const db = new sqlite3.Database(dbPath);
 
+// Cache des pools de connexion par configuration
+const connectionPools = new Map();
+
+/**
+ * Crée ou récupère un pool de connexion pour une configuration donnée
+ * @param {Object} connection - Configuration de connexion
+ * @returns {Promise<Object>} Pool de connexion
+ */
+async function getConnectionPool(connection) {
+  const poolKey = `${connection.host}:${connection.port}:${connection.username}:${connection.database || 'msdb'}`;
+  
+  // Vérifier si un pool existe déjà
+  if (connectionPools.has(poolKey)) {
+    const existingPool = connectionPools.get(poolKey);
+    if (existingPool && existingPool.connected !== false) {
+      return existingPool;
+    } else {
+      // Nettoyer le pool invalide
+      connectionPools.delete(poolKey);
+    }
+  }
+
+  // Créer un nouveau pool
+  const config = {
+    server: connection.host,
+    port: connection.port,
+    user: connection.username,
+    password: connection.password,
+    database: connection.database || 'msdb',
+    options: {
+      encrypt: false,
+      trustServerCertificate: true
+    },
+    requestTimeout: 30000,
+    connectionTimeout: 15000,
+    pool: {
+      max: 5,
+      min: 0,
+      idleTimeoutMillis: 10000,
+      acquireTimeoutMillis: 10000,
+      createTimeoutMillis: 10000,
+      destroyTimeoutMillis: 5000,
+      reapIntervalMillis: 1000,
+      createRetryIntervalMillis: 200
+    }
+  };
+
+  try {
+    const pool = await sql.connect(config);
+    
+    // Vérifier que la connexion est valide
+    if (!pool || pool.connected === false) {
+      throw new Error('Impossible d\'établir la connexion à la base de données');
+    }
+
+    // Stocker le pool dans le cache
+    connectionPools.set(poolKey, pool);
+    
+    // Ajouter un listener pour nettoyer le cache quand le pool se ferme
+    pool.on('error', (err) => {
+      console.warn('Erreur de pool de connexion:', err);
+      connectionPools.delete(poolKey);
+    });
+
+    return pool;
+  } catch (error) {
+    console.error('Erreur lors de la création du pool de connexion:', error);
+    throw error;
+  }
+}
+
+/**
+ * Exécute une requête avec gestion automatique du pool
+ * @param {Object} connection - Configuration de connexion
+ * @param {Function} queryFunction - Fonction qui reçoit le pool et exécute la requête
+ * @returns {Promise<Object>} Résultat de la requête
+ */
+async function executeQuery(connection, queryFunction) {
+  let pool = null;
+  try {
+    pool = await getConnectionPool(connection);
+    return await queryFunction(pool);
+  } catch (error) {
+    console.error('Erreur lors de l\'exécution de la requête:', error);
+    
+    // Gestion spécifique des erreurs de connexion
+    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.message.includes('aborted')) {
+      console.warn('Erreur de connexion détectée, nettoyage du pool...');
+      
+      // Nettoyer le pool problématique
+      const poolKey = `${connection.host}:${connection.port}:${connection.username}:${connection.database || 'msdb'}`;
+      connectionPools.delete(poolKey);
+      
+      // Retry une fois
+      try {
+        pool = await getConnectionPool(connection);
+        return await queryFunction(pool);
+      } catch (retryError) {
+        console.error('Erreur lors du retry:', retryError);
+        throw retryError;
+      }
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * Ferme tous les pools de connexion
+ */
+async function closeAllPools() {
+  const closePromises = Array.from(connectionPools.values()).map(async (pool) => {
+    try {
+      await pool.close();
+    } catch (error) {
+      console.warn('Erreur lors de la fermeture d\'un pool:', error);
+    }
+  });
+  
+  await Promise.all(closePromises);
+  connectionPools.clear();
+}
+
 // Fonction pour détecter et nettoyer le format de clé SSH
 function normalizeSSHKey(privateKey) {
   if (!privateKey) return null;
@@ -325,6 +448,13 @@ class DatabaseConnector {
       options: {
         encrypt: false,
         trustServerCertificate: true
+      },
+      requestTimeout: 60000, // 60 secondes au lieu de 15 secondes par défaut
+      connectionTimeout: 30000, // 30 secondes pour la connexion
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
       }
     };
 
@@ -772,6 +902,13 @@ class DatabaseConnector {
             options: {
               encrypt: false,
               trustServerCertificate: true
+            },
+            requestTimeout: 60000, // 60 secondes
+            connectionTimeout: 30000, // 30 secondes
+            pool: {
+              max: 10,
+              min: 0,
+              idleTimeoutMillis: 30000
             }
           };
           
@@ -1433,7 +1570,22 @@ class DatabaseConnector {
       switch (config.type) {
         case 'sqlserver':
           connection = await this.connectSQLServer(config);
-          const result = await connection.request().query(query);
+          const request = connection.request();
+          
+          // Ajouter les paramètres à la requête
+          if (params && typeof params === 'object') {
+            // Si params est un objet, ajouter chaque paramètre nommé
+            Object.entries(params).forEach(([key, value]) => {
+              request.input(key, value);
+            });
+          } else if (Array.isArray(params)) {
+            // Si params est un tableau, ajouter les paramètres positionnels
+            params.forEach((value, index) => {
+              request.input(`param${index}`, value);
+            });
+          }
+          
+          const result = await request.query(query);
           return result.recordset;
           
         case 'mysql':
@@ -1520,7 +1672,14 @@ class DatabaseConnector {
             user: config.username,
             password: config.password,
             database: databaseName,
-            options: { encrypt: false, trustServerCertificate: true }
+            options: { encrypt: false, trustServerCertificate: true },
+            requestTimeout: 60000, // 60 secondes
+            connectionTimeout: 30000, // 30 secondes
+            pool: {
+              max: 10,
+              min: 0,
+              idleTimeoutMillis: 30000
+            }
           };
           connection = await new sql.ConnectionPool(connectionString).connect();
           const result = await connection.request().query(`
@@ -1624,5 +1783,8 @@ class DatabaseConnector {
 module.exports = {
   getActiveConnections,
   getActiveConnectionsSync,
-  DatabaseConnector: DatabaseConnector
+  DatabaseConnector: DatabaseConnector,
+  getConnectionPool,
+  executeQuery,
+  closeAllPools
 }; 

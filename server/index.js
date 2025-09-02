@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const logger = require('./utils/logger');
+const { closeAllPools } = require('./utils/databaseConnector');
 require('dotenv').config();
 
 const app = express();
@@ -21,6 +22,8 @@ app.use('/api/performance', require('./routes/performance'));
 app.use('/api/analysis', require('./routes/analysis'));
 app.use('/api/jobs', require('./routes/jobs'));
 app.use('/api/notes', require('./routes/notes'));
+app.use('/api/multi-query', require('./routes/multiQuery'));
+app.use('/api/settings', require('./routes/settings'));
 
 // Servir les fichiers statiques du frontend en production
 if (process.env.NODE_ENV === 'production') {
@@ -57,6 +60,40 @@ process.on('unhandledRejection', (reason, promise) => {
   // Ne pas arrêter le serveur, juste logger l'erreur
 });
 
-app.listen(PORT, () => {
+// Gestion de l'arrêt propre du serveur
+process.on('SIGINT', async () => {
+  logger.info('Arrêt du serveur...');
+  try {
+    await closeAllPools();
+    logger.info('Pools de connexion fermés');
+  } catch (error) {
+    logger.error('Erreur lors de la fermeture des pools:', error);
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  logger.info('Arrêt du serveur (SIGTERM)...');
+  try {
+    await closeAllPools();
+    logger.info('Pools de connexion fermés');
+  } catch (error) {
+    logger.error('Erreur lors de la fermeture des pools:', error);
+  }
+  process.exit(0);
+});
+
+const server = app.listen(PORT, () => {
   logger.info(`Serveur démarré sur le port ${PORT}`);
+});
+
+// Gestion de l'arrêt du serveur HTTP
+server.on('close', async () => {
+  logger.info('Serveur HTTP fermé');
+  try {
+    await closeAllPools();
+    logger.info('Pools de connexion fermés');
+  } catch (error) {
+    logger.error('Erreur lors de la fermeture des pools:', error);
+  }
 }); 

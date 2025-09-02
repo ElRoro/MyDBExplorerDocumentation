@@ -286,7 +286,12 @@ const Comments = () => {
   return (
     <Box>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Typography variant="h4">Commentaires</Typography>
+        <Box display="flex" alignItems="center" gap={1}>
+          <CommentIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+          <Typography variant="h5" component="h1">
+            Commentaires
+          </Typography>
+        </Box>
         <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd}>
           Ajouter un commentaire
         </Button>

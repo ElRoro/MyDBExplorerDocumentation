@@ -13,6 +13,7 @@
     "test": "node tests/test-enabled-connections.js",
     "test-performance": "node tests/test-performance.js",
     "test-analysis": "node tests/test-analysis.js",
+    "test-dtsx": "node tests/test-dtsx-search.js",
     "migrate-indexes": "cd server && node migrate-indexes.js",
     "clean": "npm run clean-deps && npm run clean-build",
     "clean-deps": "rimraf node_modules */node_modules",

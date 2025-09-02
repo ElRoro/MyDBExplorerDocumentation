@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { getActiveConnections } = require('../utils/databaseConnector');
+const { executeQuery } = require('../utils/databaseConnector');
 const sql = require('mssql');
+const logger = require('../utils/logger');
 
 // Vérification de la portée de getConnection
-console.log('getConnection est bien défini:', typeof getConnection);
+// getConnection est bien défini
 
 // Fonction pour obtenir une connexion SQL Server
 async function getConnection(connectionId) {
@@ -27,6 +29,13 @@ async function getConnection(connectionId) {
           options: {
             encrypt: false,
             trustServerCertificate: true
+          },
+          requestTimeout: 60000, // 60 secondes
+          connectionTimeout: 30000, // 30 secondes
+          pool: {
+            max: 10,
+            min: 0,
+            idleTimeoutMillis: 30000
           }
         };
         const pool = await sql.connect(config);
@@ -103,6 +112,13 @@ async function getSqlServerJobs(connection) {
       options: {
         encrypt: false,
         trustServerCertificate: true
+      },
+      requestTimeout: 60000, // 60 secondes
+      connectionTimeout: 30000, // 30 secondes
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
       }
     };
     const pool = await sql.connect(config);
@@ -113,27 +129,40 @@ async function getSqlServerJobs(connection) {
     
     // Récupérer tous les jobs
     const result = await pool.request().query(sqlQuery);
+    
+    // Récupérer les étapes en cours pour les jobs en cours d'exécution
+    const jobsWithCurrentSteps = await Promise.all(
+      result.recordset.map(async (job) => {
+        let currentStep = null;
+        if (runningJobIds.has(job.job_id)) {
+          currentStep = await getCurrentJobStep(connection, job.job_id);
+        }
+        
+        return {
+          id: job.job_id,
+          name: job.name,
+          description: job.description,
+          category: job.category_name || 'Non catégorisé',
+          owner: job.owner_name,
+          enabled: job.enabled === 1,
+          dateCreated: new Date(job.date_created).toLocaleDateString('fr-FR'),
+          dateModified: new Date(job.date_modified).toLocaleDateString('fr-FR'),
+          currentExecutionStatus: job.current_execution_status,
+          isCurrentlyRunning: runningJobIds.has(job.job_id),
+          currentStep: currentStep,
+          lastRunStatus: job.last_run_status_desc,
+          lastRunDuration: formatDuration(job.last_run_duration),
+          lastRunDate: formatSqlDate(job.last_run_date),
+          lastRunTime: formatSqlTime(job.last_run_time),
+          lastRunMessage: job.last_run_message,
+          nextRunDate: job.next_run_date ? formatSqlDate(job.next_run_date) : 'Non planifié',
+          nextRunTime: job.next_run_time ? formatSqlTime(job.next_run_time) : '',
+        };
+      })
+    );
+    
     await pool.close();
-
-    return result.recordset.map(job => ({
-      id: job.job_id,
-      name: job.name,
-      description: job.description,
-      category: job.category_name || 'Non catégorisé',
-      owner: job.owner_name,
-      enabled: job.enabled === 1,
-      dateCreated: new Date(job.date_created).toLocaleDateString('fr-FR'),
-      dateModified: new Date(job.date_modified).toLocaleDateString('fr-FR'),
-      currentExecutionStatus: job.current_execution_status,
-      isCurrentlyRunning: runningJobIds.has(job.job_id),
-      lastRunStatus: job.last_run_status_desc,
-      lastRunDuration: formatDuration(job.last_run_duration),
-      lastRunDate: formatSqlDate(job.last_run_date),
-      lastRunTime: formatSqlTime(job.last_run_time),
-      lastRunMessage: job.last_run_message,
-      nextRunDate: job.next_run_date ? formatSqlDate(job.next_run_date) : 'Non planifié',
-      nextRunTime: job.next_run_time ? formatSqlTime(job.next_run_time) : '',
-    }));
+    return jobsWithCurrentSteps;
   } catch (err) {
     console.error('Erreur lors de la récupération des jobs:', err);
     return [{ error: err.message, connection: connection.name }];
@@ -193,8 +222,8 @@ async function getJobSteps(connection, jobId) {
         encrypt: false,
         trustServerCertificate: true
       },
-      requestTimeout: 10000, // 10 secondes
-      connectionTimeout: 10000, // 10 secondes
+      requestTimeout: 60000, // 60 secondes
+      connectionTimeout: 30000, // 30 secondes
       pool: {
         max: 1,
         min: 0,
@@ -349,8 +378,8 @@ async function getStepDetails(connection, jobId, stepId) {
         encrypt: false,
         trustServerCertificate: true
       },
-      requestTimeout: 30000,
-      connectionTimeout: 30000,
+      requestTimeout: 60000, // 60 secondes
+      connectionTimeout: 30000, // 30 secondes
       pool: {
         max: 1,
         min: 0,
@@ -429,6 +458,61 @@ async function getStepDetails(connection, jobId, stepId) {
   } catch (err) {
     console.error('Erreur lors de la récupération des détails de la step:', err);
     throw err;
+  }
+}
+
+// Fonction pour récupérer l'étape en cours d'un job
+async function getCurrentJobStep(connection, jobId) {
+  const currentStepQuery = `
+    SELECT 
+      ja.job_id,
+      ja.last_executed_step_id,
+      ja.last_executed_step_date,
+      js.step_name,
+      js.step_id,
+      js.subsystem,
+      js.command,
+      CASE 
+        WHEN ja.last_executed_step_id IS NULL THEN 'En attente'
+        ELSE 'En cours'
+      END as step_status
+    FROM msdb.dbo.sysjobactivity ja
+    LEFT JOIN msdb.dbo.sysjobsteps js ON ja.job_id = js.job_id AND ja.last_executed_step_id = js.step_id
+    WHERE ja.job_id = @jobId
+      AND ja.run_requested_date IS NOT NULL
+      AND ja.stop_execution_date IS NULL
+      AND ja.session_id = (SELECT MAX(session_id) FROM msdb.dbo.sysjobactivity)`;
+
+  try {
+    const result = await executeQuery(connection, async (pool) => {
+      return await pool.request()
+        .input('jobId', sql.UniqueIdentifier, jobId)
+        .query(currentStepQuery);
+    });
+
+    if (result.recordset && result.recordset.length > 0) {
+      const step = result.recordset[0];
+      return {
+        stepId: step.last_executed_step_id,
+        stepName: step.step_name,
+        stepStatus: step.step_status,
+        subsystem: step.subsystem,
+        command: step.command,
+        lastExecutedStepDate: step.last_executed_step_date ? new Date(step.last_executed_step_date).toLocaleString('fr-FR') : null
+      };
+    }
+    return null;
+  } catch (err) {
+    console.error('Erreur lors de la récupération de l\'étape en cours:', err);
+    
+    // Gestion spécifique des erreurs de connexion
+    if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.message.includes('aborted')) {
+      console.warn('Erreur de connexion détectée, tentative de reconnexion...');
+      // Retourner null au lieu de propager l'erreur pour éviter les crashs
+      return null;
+    }
+    
+    return null;
   }
 }
 
@@ -526,9 +610,17 @@ router.get('/:connectionId/:jobId/status', async (req, res) => {
       }
 
       const job = result.recordset[0];
+      
+      // Récupérer l'étape en cours si le job est en cours d'exécution
+      let currentStep = null;
+      if (job.is_running === 1) {
+        currentStep = await getCurrentJobStep(connection, jobId);
+      }
+      
       res.json({
         enabled: job.enabled === 1,
         isCurrentlyRunning: job.is_running === 1,
+        currentStep: currentStep,
         lastRunStatus: job.last_run_status_desc,
         lastRunDuration: formatDuration(job.run_duration),
         lastRunDate: formatSqlDate(job.run_date),
@@ -540,6 +632,36 @@ router.get('/:connectionId/:jobId/status', async (req, res) => {
     } catch (error) {
       console.error('Erreur lors de la récupération du statut du job:', error);
       res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// GET /api/jobs/:connectionId/:jobId/current-step
+router.get('/:connectionId/:jobId/current-step', async (req, res) => {
+  const { connectionId, jobId } = req.params;
+  
+  getActiveConnections(async (err, activeConnections) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const connection = activeConnections.find(conn => conn.id === connectionId);
+    if (!connection) {
+      return res.status(404).json({ error: 'Connexion non trouvée' });
+    }
+
+    try {
+      const currentStep = await getCurrentJobStep(connection, jobId);
+      // Retourner null si aucune étape en cours, au lieu d'une erreur
+      res.json(currentStep);
+    } catch (err) {
+      // Gestion spécifique des erreurs de connexion
+      if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.message.includes('aborted')) {
+        console.warn('Erreur de connexion dans current-step endpoint:', err.message);
+        // Retourner null au lieu d'une erreur 500 pour éviter les crashs côté client
+        res.json(null);
+      } else {
+        console.error('Erreur dans current-step endpoint:', err);
+        res.status(500).json({ error: err.message });
+      }
     }
   });
 });
@@ -747,6 +869,370 @@ router.put('/:connectionId/:jobId/steps/:stepId/command', async (req, res) => {
         await connection.close();
       } catch (err) {
         console.error('Erreur lors de la fermeture de la connexion:', err);
+      }
+    }
+  }
+});
+
+// Route pour récupérer les logs du catalogue d'intégration
+router.get('/:connectionId/:jobId/steps/:stepId/catalog-logs', async (req, res) => {
+  let connection;
+  try {
+    const { connectionId, jobId, stepId } = req.params;
+    const { executionId, executionTime, loadMore } = req.query;
+    
+    // Log pour vérifier que la route est appelée
+    logger.info('=== ROUTE CATALOG LOGS APPELÉE ===');
+    logger.info(`Connection ID: ${connectionId}`);
+    logger.info(`Job ID: ${jobId}`);
+    logger.info(`Step ID: ${stepId}`);
+    logger.info(`Execution ID: ${executionId}`);
+    logger.info(`Execution Time: ${executionTime}`);
+    logger.info('==================================');
+    connection = await getConnection(connectionId);
+    
+    // D'abord, récupérer le nom du package DTSX depuis la commande de la step
+    const stepCommandQuery = `
+      SELECT command 
+      FROM msdb.dbo.sysjobsteps 
+      WHERE job_id = @jobId AND step_id = @stepId`;
+    
+    const stepResult = await connection.request()
+      .input('jobId', sql.UniqueIdentifier, jobId)
+      .input('stepId', sql.Int, stepId)
+      .query(stepCommandQuery);
+    
+    logger.info(`Step Result: ${JSON.stringify(stepResult.recordset)}`);
+    
+    if (!stepResult.recordset || stepResult.recordset.length === 0) {
+      logger.info('Aucun résultat trouvé pour la step');
+      return res.json([]);
+    }
+    
+    const command = stepResult.recordset[0].command;
+    logger.info(`Command: ${command}`);
+    
+    // Extraire le nom du package DTSX de la commande
+    // Support pour /ISSERVER et /SQL /FILE
+    let dtsxMatch = command.match(/\/(SQL|FILE)\s+\"([^\"]+\.dtsx)\"/i);
+    
+    // Si pas de match avec SQL/FILE, essayer avec ISSERVER
+    if (!dtsxMatch) {
+      dtsxMatch = command.match(/\/ISSERVER\s+\"[^"]*\\\\([^\\]+\.dtsx)\\\"/i);
+    }
+    
+    // Si toujours pas de match, essayer une approche plus simple
+    if (!dtsxMatch) {
+      dtsxMatch = command.match(/([^\\\/]+\.dtsx)/i);
+    }
+    
+    logger.info(`DTSX Match: ${JSON.stringify(dtsxMatch)}`);
+    
+    if (!dtsxMatch) {
+      logger.info('Aucun match DTSX trouvé dans la commande');
+      return res.json([]);
+    }
+    
+    // Extraire le nom du fichier DTSX selon le type de match
+    let dtsxFileName, dtsxName;
+    
+    if (dtsxMatch[2]) {
+      // Match avec /SQL ou /FILE
+      dtsxFileName = dtsxMatch[2];
+      dtsxName = dtsxFileName.split('\\').pop(); // Prendre juste le nom du fichier
+    } else {
+      // Match simple avec le nom du fichier directement
+      dtsxFileName = dtsxMatch[1];
+      dtsxName = dtsxFileName; // Le nom est déjà extrait
+    }
+    
+    logger.info(`DTSX File Name: ${dtsxFileName}`);
+    logger.info(`DTSX Name: ${dtsxName}`);
+    
+    // Calculer la fenêtre temporelle (1 heure avant et après l'exécution)
+    let timeFilter = '';
+    let request = connection.request();
+    let startTime, endTime; // Déclarer les variables en dehors du bloc if
+    
+    if (executionTime) {
+      // Convertir l'heure d'exécution en format SQL Server compatible
+      // Le format attendu est "YYYY-MM-DDTHH:mm:ss" sans fuseau horaire
+      let executionDate;
+      
+      // Gérer différents formats de date
+      if (executionTime.includes('/')) {
+        // Format DD/MM/YYYY -> convertir en YYYY-MM-DD
+        const parts = executionTime.split('T')[0].split('/');
+        const day = parts[0];
+        const month = parts[1];
+        const year = parts[2];
+        executionDate = new Date(`${year}-${month}-${day}T${executionTime.split('T')[1]}`);
+      } else {
+        executionDate = new Date(executionTime);
+      }
+      
+      logger.info(`Execution Date parsed: ${executionDate.toISOString()}`);
+      
+      // Ajuster la fenêtre de temps selon le paramètre loadMore
+      let timeWindow = 5; // 5 minutes par défaut
+      if (loadMore === 'true') {
+        timeWindow = 30; // 30 minutes si on charge plus
+      }
+      
+      startTime = new Date(executionDate.getTime() - timeWindow * 60 * 1000);
+      endTime = new Date(executionDate.getTime() + timeWindow * 60 * 1000);
+      
+      logger.info(`Start Time: ${startTime.toISOString()}`);
+      logger.info(`End Time: ${endTime.toISOString()}`);
+      
+      // Utiliser CAST pour convertir les dates en format compatible avec message_time
+      // Ajuster pour le fuseau horaire local (+02:00)
+      const localStartTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000); // +2h
+      const localEndTime = new Date(endTime.getTime() + 2 * 60 * 60 * 1000);     // +2h
+      
+      logger.info(`Local Start Time: ${localStartTime.toISOString()}`);
+      logger.info(`Local End Time: ${localEndTime.toISOString()}`);
+      logger.info(`Time Window: ±${timeWindow} minutes, Load More: ${loadMore === 'true' ? 'Yes' : 'No'}`);
+      
+      timeFilter = `AND CAST(om.message_time AS datetime2) >= @startTime AND CAST(om.message_time AS datetime2) <= @endTime`;
+      request = request
+        .input('startTime', sql.DateTime2, localStartTime)
+        .input('endTime', sql.DateTime2, localEndTime);
+    } else {
+      // Si pas d'heure d'exécution, prendre les 7 derniers jours
+      timeFilter = `AND om.message_time >= DATEADD(day, -7, GETDATE())`;
+    }
+    
+    // Requête pour récupérer les logs du catalogue d'intégration
+    const limit = loadMore === 'true' ? 200 : 50;
+    const catalogLogsQuery = `
+      SELECT TOP ${limit}
+        om.operation_id,
+        e.execution_id,
+        e.package_name,
+        om.message_time,
+        om.message_type,
+        om.message,
+        CASE 
+          WHEN om.message_type = 120 THEN 'Error'
+          WHEN om.message_type = 110 THEN 'Warning'
+          WHEN om.message_type = 70 THEN 'Information'
+          WHEN om.message_type = 30 THEN 'Pre-execute'
+          WHEN om.message_type = 60 THEN 'Progress'
+          WHEN om.message_type = 50 THEN 'StatusChange'
+          WHEN om.message_type = 100 THEN 'QueryCancel'
+          WHEN om.message_type = 130 THEN 'TaskFailed'
+          WHEN om.message_type = 90 THEN 'Diagnostic'
+          WHEN om.message_type = 200 THEN 'Custom'
+          WHEN om.message_type = 140 THEN 'DiagnosticEx'
+          WHEN om.message_type = 400 THEN 'NonDiagnostic'
+          WHEN om.message_type = 80 THEN 'VariableValueChanged'
+          ELSE 'Unknown'
+        END as message_type_desc
+      FROM catalog.operation_messages AS om
+      LEFT JOIN catalog.executions AS e ON om.operation_id = e.execution_id
+      WHERE om.message_type IN (120, 110, 70, 30, 60, 50, 100, 130, 90, 200, 140, 400, 80) -- Types de messages importants (sans Pre-validate, Post-validate, Post-execute)
+        AND e.package_name = @dtsxName
+        ${executionId ? 'AND e.execution_id = @executionId' : ''}
+        ${timeFilter}
+      ORDER BY om.message_time DESC`;
+    
+    // Logger la requête avec les paramètres
+    logger.info('=== REQUÊTE LOGS CATALOGUE ===');
+    logger.info(`DTSX Name: ${dtsxName}`);
+    logger.info(`Execution ID: ${executionId}`);
+    logger.info(`Execution Time: ${executionTime}`);
+    logger.info(`Time Filter: ${timeFilter}`);
+    logger.info('Requête SQL complète:', { query: catalogLogsQuery });
+    logger.info('==============================');
+    
+    if (executionId) {
+      request = request.input('executionId', sql.BigInt, executionId);
+    }
+    request = request.input('dtsxName', sql.NVarChar, dtsxName);
+    
+    // Créer la requête avec les paramètres substitués pour les logs
+    let queryWithParams = catalogLogsQuery;
+    queryWithParams = queryWithParams.replace('@dtsxName', `'${dtsxName}'`);
+    if (executionId) {
+      queryWithParams = queryWithParams.replace('@executionId', executionId);
+    }
+    if (executionTime) {
+      queryWithParams = queryWithParams.replace('@startTime', `'${startTime.toISOString()}'`);
+      queryWithParams = queryWithParams.replace('@endTime', `'${endTime.toISOString()}'`);
+    }
+    
+    logger.info('=== REQUÊTE SQL AVEC PARAMÈTRES ===');
+    logger.info(queryWithParams);
+    logger.info('===================================');
+    
+    const result = await request.query(catalogLogsQuery);
+
+    // Logger les résultats
+    logger.info('=== RÉSULTATS LOGS CATALOGUE ===');
+    logger.info(`Nombre de logs trouvés: ${result.recordset.length}`);
+    logger.info('===============================');
+
+    // Formater les résultats
+    const logs = result.recordset.map(log => ({
+      operationId: log.operation_id,
+      executionId: log.execution_id,
+      packageName: log.package_name,
+      messageTime: log.message_time,
+      messageType: log.message_type,
+      messageTypeDesc: log.message_type_desc,
+      message: log.message
+    }));
+
+    res.json(logs);
+  } catch (error) {
+    logger.error('Erreur lors de la récupération des logs du catalogue:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        logger.error('Erreur lors de la fermeture de la connexion:', err);
+      }
+    }
+  }
+}); 
+
+// Route pour récupérer les logs du job (sysjobhistory)
+router.get('/:connectionId/:jobId/steps/:stepId/job-logs', async (req, res) => {
+  let connection;
+  try {
+    const { connectionId, jobId, stepId } = req.params;
+    const { executionTime, loadMore } = req.query;
+    
+    logger.info('=== ROUTE JOB LOGS APPELÉE ===');
+    logger.info(`Connection ID: ${connectionId}`);
+    logger.info(`Job ID: ${jobId}`);
+    logger.info(`Step ID: ${stepId}`);
+    logger.info(`Execution Time: ${executionTime}`);
+    logger.info('==============================');
+    
+    connection = await getConnection(connectionId);
+    
+    // Requête simple pour récupérer les logs du job depuis sysjobhistory
+    const limit = loadMore === 'true' ? 200 : 50;
+    let jobLogsQuery = `
+      SELECT TOP ${limit}
+        h.job_id,
+        h.step_id,
+        h.step_name,
+        h.run_date,
+        h.run_time,
+        h.run_duration,
+        h.run_status,
+        h.message,
+        h.retries_attempted,
+        h.server,
+        CASE 
+          WHEN h.run_status = 1 THEN 'Succès'
+          WHEN h.run_status = 0 THEN 'Échec'
+          WHEN h.run_status = 2 THEN 'Nouvelle tentative'
+          WHEN h.run_status = 3 THEN 'Annulé'
+          WHEN h.run_status = 4 THEN 'En cours'
+          ELSE 'Inconnu'
+        END as run_status_desc
+      FROM msdb.dbo.sysjobhistory h WITH (NOLOCK)
+      WHERE h.job_id = @jobId 
+        AND h.step_id = @stepId`;
+    
+    let request = connection.request()
+      .input('jobId', sql.UniqueIdentifier, jobId)
+      .input('stepId', sql.Int, stepId);
+    
+    // Ajouter un filtre temporel simple si une heure d'exécution est fournie
+    if (executionTime) {
+      try {
+        // Convertir l'heure d'exécution
+        let executionDate;
+        if (executionTime.includes('/')) {
+          const parts = executionTime.split('T')[0].split('/');
+          const day = parts[0];
+          const month = parts[1];
+          const year = parts[2];
+          executionDate = new Date(`${year}-${month}-${day}T${executionTime.split('T')[1]}`);
+        } else {
+          executionDate = new Date(executionTime);
+        }
+        
+        logger.info(`Execution Date parsed: ${executionDate.toISOString()}`);
+        
+        // Fenêtre de temps simple
+        const timeWindow = loadMore === 'true' ? 30 : 5; // minutes
+        const startTime = new Date(executionDate.getTime() - timeWindow * 60 * 1000);
+        const endTime = new Date(executionDate.getTime() + timeWindow * 60 * 1000);
+        
+        logger.info(`Start Time: ${startTime.toISOString()}`);
+        logger.info(`End Time: ${endTime.toISOString()}`);
+        
+        // Utiliser une approche plus simple pour le filtrage temporel
+        const startDate = startTime.getFullYear() * 10000 + (startTime.getMonth() + 1) * 100 + startTime.getDate();
+        const startTimeStr = startTime.getHours() * 10000 + startTime.getMinutes() * 100 + startTime.getSeconds();
+        const endDate = endTime.getFullYear() * 10000 + (endTime.getMonth() + 1) * 100 + endTime.getDate();
+        const endTimeStr = endTime.getHours() * 10000 + endTime.getMinutes() * 100 + endTime.getSeconds();
+        
+        jobLogsQuery += ` AND (h.run_date >= @startDate AND h.run_time >= @startTime) AND (h.run_date <= @endDate AND h.run_time <= @endTime)`;
+        request = request
+          .input('startDate', sql.Int, startDate)
+          .input('startTime', sql.Int, startTimeStr)
+          .input('endDate', sql.Int, endDate)
+          .input('endTime', sql.Int, endTimeStr);
+          
+      } catch (dateError) {
+        logger.error('Erreur lors du parsing de la date:', dateError);
+        // En cas d'erreur, continuer sans filtre temporel
+      }
+    } else {
+      // Si pas d'heure d'exécution, limiter aux 7 derniers jours
+      jobLogsQuery += ` AND h.run_date >= CONVERT(int, CONVERT(varchar(8), DATEADD(day, -7, GETDATE()), 112))`;
+    }
+    
+    jobLogsQuery += ` ORDER BY h.run_date DESC, h.run_time DESC`;
+    
+    logger.info('=== REQUÊTE LOGS JOB ===');
+    logger.info(`Job ID: ${jobId}`);
+    logger.info(`Step ID: ${stepId}`);
+    logger.info(`Execution Time: ${executionTime}`);
+    logger.info('Requête SQL complète:', { query: jobLogsQuery });
+    logger.info('========================');
+    
+    const result = await request.query(jobLogsQuery);
+
+    // Logger les résultats
+    logger.info('=== RÉSULTATS LOGS JOB ===');
+    logger.info(`Nombre de logs trouvés: ${result.recordset.length}`);
+    logger.info('==========================');
+
+    // Formater les résultats
+    const logs = result.recordset.map(log => ({
+      jobId: log.job_id,
+      stepId: log.step_id,
+      stepName: log.step_name,
+      runDate: formatSqlDate(log.run_date),
+      runTime: formatSqlTime(log.run_time),
+      runDuration: formatDuration(log.run_duration),
+      runStatus: log.run_status,
+      runStatusDesc: log.run_status_desc,
+      message: log.message,
+      retriesAttempted: log.retries_attempted,
+      server: log.server
+    }));
+
+    res.json(logs);
+  } catch (error) {
+    logger.error('Erreur lors de la récupération des logs du job:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        logger.error('Erreur lors de la fermeture de la connexion:', err);
       }
     }
   }

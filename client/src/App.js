@@ -29,6 +29,8 @@ import {
   Timer as TimerIcon,
   Note as NoteIcon,
   Add as AddIcon,
+  QueryStats as QueryStatsIcon,
+  Settings as SettingsIcon,
 } from '@mui/icons-material';
 
 import Connections from './components/Connections';
@@ -37,8 +39,10 @@ import Comments from './components/Comments';
 import Maintenance from './components/Maintenance';
 import SqlJobs from './components/SqlJobs';
 import Notes from './components/Notes';
+import MultiQuery from './components/MultiQuery';
+import Settings from './components/Settings';
 
-const drawerWidth = 240;
+const drawerWidth = 200;
 
 function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -52,6 +56,7 @@ function App() {
     { text: 'Commentaires', icon: <CommentIcon />, path: '/comments' },
     { text: 'SQL Jobs', icon: <TimerIcon />, path: '/jobs' },
     { text: 'Maintenance', icon: <BuildIcon />, path: '/maintenance' },
+    { text: 'Multi-Query', icon: <QueryStatsIcon />, path: '/multi-query' },
     { text: 'Connexions', icon: <StorageIcon />, path: '/connections' },
   ];
 
@@ -65,7 +70,7 @@ function App() {
   };
 
   const drawer = (
-    <div>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <Toolbar>
         <Box display="flex" alignItems="center" gap={1}>
           <DatabaseIcon />
@@ -74,7 +79,7 @@ function App() {
           </Typography>
         </Box>
       </Toolbar>
-      <List>
+      <List sx={{ flexGrow: 1 }}>
         {menuItems.map((item) => (
           <ListItem
             button
@@ -88,7 +93,20 @@ function App() {
           </ListItem>
         ))}
       </List>
-    </div>
+      <Box sx={{ p: 1, borderTop: 1, borderColor: 'divider' }}>
+        <ListItem
+          button
+          component="a"
+          href="/settings"
+          onClick={() => isMobile && setMobileOpen(false)}
+        >
+          <ListItemIcon>
+            <SettingsIcon />
+          </ListItemIcon>
+          <ListItemText primary="Paramètres" />
+        </ListItem>
+      </Box>
+    </Box>
   );
 
   return (
@@ -163,6 +181,8 @@ function App() {
           <Route path="/maintenance" element={<Maintenance />} />
           <Route path="/jobs" element={<SqlJobs />} />
           <Route path="/notes" element={<Notes />} />
+          <Route path="/multi-query" element={<MultiQuery />} />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
 
         {/* Bouton flottant global pour ajouter une note */}

@@ -41,7 +41,7 @@ import {
   Cancel as CancelIcon,
   Note as NoteIcon,
 } from '@mui/icons-material';
-import api from '../services/api';
+import { notesAPI, connectionsAPI } from '../services/api';
 
 function Notes() {
   const location = useLocation();
@@ -90,8 +90,8 @@ function Notes() {
     try {
       setLoading(true);
       const [notesRes, connectionsRes] = await Promise.all([
-        api.get('/notes'),
-        api.get('/connections')
+        notesAPI.getAll(),
+        connectionsAPI.getActiveConnections()
       ]);
       
       const notes = notesRes.data;
@@ -128,7 +128,7 @@ function Notes() {
         if (selectedDatabase) params.append('database_name', selectedDatabase);
         if (selectedTags.length > 0) params.append('tags', selectedTags.join(','));
 
-        const response = await api.get(`/notes?${params.toString()}`);
+        const response = await notesAPI.search(params);
         setNotes(response.data);
       } catch (err) {
         setError('Erreur lors de la recherche');
@@ -160,7 +160,7 @@ function Notes() {
     }
 
     try {
-      const response = await api.get(`/connections/${connectionId}/databases`);
+      const response = await connectionsAPI.getDatabases(connectionId);
       
       // Extraire les bases de données uniques des notes pour ce serveur
       const dbsFromNotes = new Set(
@@ -282,10 +282,10 @@ function Notes() {
       };
 
       if (editingNote) {
-        await api.put(`/notes/${editingNote.id}`, dataToSend);
+        await notesAPI.update(editingNote.id, dataToSend);
         setSuccess('Note mise à jour avec succès');
       } else {
-        await api.post('/notes', dataToSend);
+        await notesAPI.create(dataToSend);
         setSuccess('Note créée avec succès');
       }
       
@@ -303,7 +303,7 @@ function Notes() {
     }
 
     try {
-      await api.delete(`/notes/${noteId}`);
+      await notesAPI.deleteNote(noteId);
       setSuccess('Note supprimée avec succès');
       loadData();
     } catch (err) {
@@ -420,10 +420,13 @@ function Notes() {
   );
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h4" component="h1" gutterBottom sx={{ mb: 3 }}>
-        Notes
-      </Typography>
+    <Box>
+      <Box display="flex" alignItems="center" gap={1} mb={3}>
+        <NoteIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+        <Typography variant="h5" component="h1">
+          Notes
+        </Typography>
+      </Box>
 
       {/* Filtres et recherche */}
       <Paper sx={{ p: 2, mb: 3 }}>
@@ -431,6 +434,7 @@ function Notes() {
           <Grid item xs={12} md={selectedConnection ? 3 : 4}>
             <TextField
               fullWidth
+              size="small"
               placeholder="Rechercher dans les notes..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -444,7 +448,7 @@ function Notes() {
             />
           </Grid>
           <Grid item xs={12} md={selectedConnection ? 3 : 4}>
-            <FormControl fullWidth>
+            <FormControl fullWidth size="small">
               <InputLabel>Tags</InputLabel>
               <Select
                 multiple
@@ -485,7 +489,7 @@ function Notes() {
             </FormControl>
           </Grid>
           <Grid item xs={12} md={selectedConnection ? 3 : 4}>
-            <FormControl fullWidth>
+            <FormControl fullWidth size="small">
               <InputLabel>Serveur</InputLabel>
               <Select
                 value={selectedConnection}
@@ -509,7 +513,7 @@ function Notes() {
           </Grid>
           {selectedConnection && (
             <Grid item xs={12} md={3}>
-              <FormControl fullWidth>
+              <FormControl fullWidth size="small">
                 <InputLabel>Base de données</InputLabel>
                 <Select
                   value={selectedDatabase}

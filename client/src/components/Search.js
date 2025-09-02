@@ -7,7 +7,8 @@ import {
   DialogContent, DialogActions, DialogContentText, TextareaAutosize,
   FormControlLabel, Checkbox, Accordion, AccordionSummary, 
   AccordionDetails, TablePagination, Snackbar, LinearProgress,
-  TableSortLabel, List, ListItem, ListItemIcon, ListItemText, Divider
+  TableSortLabel, List, ListItem, ListItemIcon, ListItemText, Divider,
+  Stack
 } from '@mui/material';
 import { searchAPI, connectionsAPI, commentsAPI } from '../services/api';
 import { 
@@ -27,28 +28,33 @@ import {
   Storage as StorageIcon,
   Storage as DatabaseIcon,
   Code as DdlIcon,
-  AccountTree as DependenciesIcon
+  AccountTree as DependenciesIcon,
+  IntegrationInstructions as DtsxIcon,
+  Work as JobIcon,
+  Folder as FolderIcon,
+  Info as InfoIcon,
+  Settings as SettingsIcon,
+  PlayArrow as PlayArrowIcon
 } from '@mui/icons-material';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import logger from '../utils/logger';
 
-// Hook personnalisé pour le debouncing
-const useDebounce = (value, delay) => {
-  const [debouncedValue, setDebouncedValue] = useState(value);
 
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
-};
+// Hook de debouncing supprimé - recherche uniquement manuelle
+// const useDebounce = (value, delay) => {
+//   const [debouncedValue, setDebouncedValue] = useState(value);
+//   useEffect(() => {
+//     const handler = setTimeout(() => {
+//       setDebouncedValue(value);
+//     }, delay);
+//     return () => {
+//       clearTimeout(handler);
+//     };
+//   }, [value, delay]);
+//   return debouncedValue;
+// };
 
 const Search = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -57,10 +63,23 @@ const Search = () => {
   const [selectedDatabase, setSelectedDatabase] = useState('');
   const [databases, setDatabases] = useState([]);
   const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [dbLoading, setDbLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [advancedMode] = useState(true);
+  const [advancedMode, setAdvancedMode] = useState(true);
   const [selectedObjectTypes, setSelectedObjectTypes] = useState(['TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION']);
+  const [isDtsxAvailable, setIsDtsxAvailable] = useState(false);
+
+  // Vérifier si la recherche DTSX est disponible
+  useEffect(() => {
+    fetch('/api/search/dtsx-available')
+      .then(response => response.json())
+      .then(data => {
+        setIsDtsxAvailable(data.available);
+      })
+      .catch(() => {
+        setIsDtsxAvailable(false);
+      });
+  }, []);
   const [searchMode, setSearchMode] = useState('fast'); // 'fast' ou 'complete'
   const [orderBy, setOrderBy] = useState('object_name');
   const [order, setOrder] = useState('asc');
@@ -90,18 +109,31 @@ const Search = () => {
   const [tableData, setTableData] = useState({ columns: [], data: [] });
   const [selectedTable, setSelectedTable] = useState(null);
   const [dataPage, setDataPage] = useState(0);
-  const [dataRowsPerPage, setDataRowsPerPage] = useState(10);
+    const [dataRowsPerPage, setDataRowsPerPage] = useState(10);
+  const [dtsxResults, setDtsxResults] = useState([]);
+  const [dtsxLoading, setDtsxLoading] = useState(false);
+  const [dtsxOrderBy, setDtsxOrderBy] = useState('object_name');
+  const [dtsxOrder, setDtsxOrder] = useState('asc');
+  const [dtsxDetailsDialogOpen, setDtsxDetailsDialogOpen] = useState(false);
+  const [dtsxDetailsLoading, setDtsxDetailsLoading] = useState(false);
+  const [dtsxDetails, setDtsxDetails] = useState(null);
+  const [selectedDtsx, setSelectedDtsx] = useState(null);
+
   const fetchDbRequestId = useRef(0);
   
-  // Debouncing pour la recherche automatique
-  const debouncedSearchTerm = useDebounce(searchTerm, 500);
+  // Debouncing supprimé - recherche uniquement manuelle
+  // const debouncedSearchTerm = useDebounce(searchTerm, 500);
 
-  const objectTypes = [
+  const baseObjectTypes = [
     { value: 'TABLE', label: 'Tables', icon: <TableIcon /> },
     { value: 'VIEW', label: 'Vues', icon: <ViewIcon /> },
     { value: 'PROCEDURE', label: 'Procédures', icon: <ProcedureIcon /> },
     { value: 'FUNCTION', label: 'Fonctions', icon: <FunctionIcon /> },
   ];
+
+    const objectTypes = isDtsxAvailable
+    ? [...baseObjectTypes, { value: 'DTSX_PACKAGE', label: 'Packages DTSX', icon: <DtsxIcon /> }]
+    : baseObjectTypes;
 
   useEffect(() => {
     fetchConnections();
@@ -118,7 +150,7 @@ const Search = () => {
 
   const fetchConnections = async () => {
     try {
-      const response = await connectionsAPI.getActive();
+      const response = await connectionsAPI.getActiveConnections();
       setConnections(response.data);
     } catch (err) {
       setError('Erreur lors du chargement des connexions');
@@ -152,47 +184,94 @@ const Search = () => {
       return;
     }
 
-    setLoading(true);
+    // Vérifier si au moins un type d'objet est sélectionné en mode avancé
+    if (advancedMode && selectedObjectTypes.length === 0) {
+      setResults([]);
+      setDtsxResults([]);
+      setError('Veuillez sélectionner au moins un type d\'objet à rechercher');
+      return;
+    }
+
+    // Replier automatiquement la section avancée lors d'une recherche
+    if (advancedMode) {
+      setAdvancedMode(false);
+    }
+
     setError(null);
     setResults([]);
 
-    try {
-      const searchData = {
-        searchTerm: searchTermString.trim(),
-        connectionId: selectedConnection || null,
-        databaseName: selectedDatabase || null,
-        searchMode: searchMode,
-      };
+    // Vérifier s'il y a des types d'objets autres que DTSX sélectionnés
+    const nonDtsxTypes = selectedObjectTypes.filter(type => type !== 'DTSX_PACKAGE');
+    const hasNonDtsxTypes = nonDtsxTypes.length > 0;
 
-      if (advancedMode) {
-        searchData.connectionIds = selectedConnection ? [selectedConnection] : null;
-        searchData.databaseNames = selectedDatabase ? [selectedDatabase] : null;
-        searchData.objectTypes = selectedObjectTypes;
+    // Recherche des objets de base de données seulement si des types autres que DTSX sont sélectionnés
+    if (!advancedMode || hasNonDtsxTypes) {
+      setDbLoading(true);
+      try {
+        const searchData = {
+          searchTerm: searchTermString.trim(),
+          connectionId: selectedConnection || null,
+          databaseName: selectedDatabase || null,
+          searchMode: searchMode,
+          includeDtsx: false
+        };
+
+        if (advancedMode) {
+          searchData.connectionIds = selectedConnection ? [selectedConnection] : null;
+          searchData.databaseNames = selectedDatabase ? [selectedDatabase] : null;
+          searchData.objectTypes = nonDtsxTypes;
+        }
+
+        const response = await (advancedMode ? searchAPI.searchAdvanced(searchData) : searchAPI.search(searchData));
+        setResults(response.data.results || []);
+        
+        // Charger les commentaires existants pour les résultats
+        await loadExistingComments(response.data.results || []);
+      } catch (err) {
+        setError(err.response?.data?.error || 'Erreur lors de la recherche');
+      } finally {
+        setDbLoading(false);
       }
-
-      const response = advancedMode 
-        ? await searchAPI.searchAdvanced(searchData)
-        : await searchAPI.search(searchData);
-
-      setResults(response.data.results || []);
-      
-      // Charger les commentaires existants pour les résultats
-      await loadExistingComments(response.data.results || []);
-    } catch (err) {
-      setError(err.response?.data?.error || 'Erreur lors de la recherche');
-    } finally {
-      setLoading(false);
     }
-  }, [searchTerm, selectedConnection, selectedDatabase, searchMode, advancedMode, selectedObjectTypes]);
 
-  // Recherche automatique avec debouncing
-  useEffect(() => {
-    if (debouncedSearchTerm.trim().length >= 2) {
-      handleSearch(debouncedSearchTerm);
-    } else if (debouncedSearchTerm.trim().length === 0) {
-      setResults([]);
+    // Recherche DTSX si activée, disponible et sélectionnée
+    if (isDtsxAvailable && selectedObjectTypes.includes('DTSX_PACKAGE')) {
+      setDtsxLoading(true);
+      try {
+        const dtsxSearchData = {
+          searchTerm: searchTermString.trim(),
+          connectionId: selectedConnection || null,
+          databaseName: selectedDatabase || null,
+          searchMode: searchMode,
+          includeDtsx: true
+        };
+
+        if (advancedMode) {
+          dtsxSearchData.connectionIds = selectedConnection ? [selectedConnection] : null;
+          dtsxSearchData.databaseNames = selectedDatabase ? [selectedDatabase] : null;
+          dtsxSearchData.objectTypes = ['DTSX_PACKAGE'];
+        }
+
+        const dtsxResponse = await (advancedMode ? searchAPI.searchAdvanced(dtsxSearchData) : searchAPI.search(dtsxSearchData));
+        setDtsxResults(dtsxResponse.data.dtsx_results || []);
+      } catch (err) {
+        // Ne pas écraser l'erreur de la recherche principale si elle existe
+        if (!error) setError(err.response?.data?.error || 'Erreur lors de la recherche DTSX');
+      } finally {
+        setDtsxLoading(false);
+      }
     }
-  }, [debouncedSearchTerm, handleSearch]);
+  }, [searchTerm, selectedConnection, selectedDatabase, searchMode, advancedMode, selectedObjectTypes, isDtsxAvailable]);
+
+  // Recherche automatique désactivée - uniquement par clic sur le bouton
+  // useEffect(() => {
+  //   if (debouncedSearchTerm.trim().length >= 2) {
+  //     handleSearch(debouncedSearchTerm);
+  //   } else if (debouncedSearchTerm.trim().length === 0) {
+  //     setResults([]);
+  //     setDtsxResults([]);
+  //   }
+  // }, [debouncedSearchTerm, handleSearch]);
 
   const handleObjectTypeChange = (type) => {
     setSelectedObjectTypes(prev => 
@@ -377,7 +456,7 @@ const Search = () => {
     return existingComments.has(key);
   };
 
-  // Cache pour les commentaires
+  // Cache pour les commentaires 
   const commentsCache = useRef(new Map());
   
   const loadExistingComments = useCallback(async (results) => {
@@ -444,11 +523,30 @@ const Search = () => {
     }
   };
 
-  const handleRequestSort = (property) => {
+  const handleCopyText = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      // Feedback visuel temporaire
+      const event = new CustomEvent('copySuccess');
+      window.dispatchEvent(event);
+    } catch (err) {
+      console.error('Erreur lors de la copie:', err);
+    }
+  };
+
+    const handleRequestSort = (property) => {
     const isAsc = orderBy === property && order === 'asc';
     setOrder(isAsc ? 'desc' : 'asc');
     setOrderBy(property);
   };
+
+  const handleDtsxRequestSort = (property) => {
+    const isAsc = dtsxOrderBy === property && dtsxOrder === 'asc';
+    setDtsxOrder(isAsc ? 'desc' : 'asc');
+    setDtsxOrderBy(property);
+  };
+
+ 
 
   const sortResults = (results, orderBy, order) => {
     return results.sort((a, b) => {
@@ -475,8 +573,9 @@ const Search = () => {
     switch (type) {
       case 'TABLE': return <TableIcon />;
       case 'VIEW': return <ViewIcon />;
-      case 'PROCEDURE': return <ProcedureIcon />;
+            case 'PROCEDURE': return <ProcedureIcon />;
       case 'FUNCTION': return <FunctionIcon />;
+      case 'DTSX_PACKAGE': return <DtsxIcon />;
       default: return <StorageIcon />;
     }
   };
@@ -485,8 +584,9 @@ const Search = () => {
     switch (type) {
       case 'TABLE': return 'Table';
       case 'VIEW': return 'Vue';
-      case 'PROCEDURE': return 'Procédure';
+            case 'PROCEDURE': return 'Procédure';
       case 'FUNCTION': return 'Fonction';
+      case 'DTSX_PACKAGE': return 'Package DTSX';
       default: return type;
     }
   };
@@ -498,6 +598,42 @@ const Search = () => {
       case 'mariadb': return 'warning';
       default: return 'default';
     }
+  };
+
+  const getTaskTypeColor = (type) => {
+    if (!type) return 'default';
+    
+    const typeLower = type.toLowerCase();
+    
+    // Script Tasks
+    if (typeLower.includes('scripttask')) return 'info';
+    
+    // SQL Tasks
+    if (typeLower.includes('executesqltask') || typeLower.includes('sqltask')) return 'success';
+    
+    // File System Tasks
+    if (typeLower.includes('filesystemtask')) return 'warning';
+    
+    // Data Flow Tasks
+    if (typeLower.includes('dataflowtask') || typeLower.includes('dataflow')) return 'secondary';
+    
+    // Sequence Container
+    if (typeLower.includes('sequence') || typeLower.includes('container')) return 'primary';
+    
+    // For Loop / Foreach Loop
+    if (typeLower.includes('loop')) return 'error';
+    
+    // Send Mail Task
+    if (typeLower.includes('sendmail') || typeLower.includes('mail')) return 'info';
+    
+    // FTP Task
+    if (typeLower.includes('ftp')) return 'warning';
+    
+    // Web Service Task
+    if (typeLower.includes('webservice') || typeLower.includes('web')) return 'secondary';
+    
+    // Default
+    return 'default';
   };
 
   const groupResultsByConnection = (results) => {
@@ -542,6 +678,17 @@ const Search = () => {
     }
     if (typeof value === 'boolean') {
       return value ? 'Oui' : 'Non';
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value);
+    }
+    return String(value);
+  };
+
+  // Fonction pour formater les valeurs des variables DTSX
+  const formatDtsxValue = (value) => {
+    if (value === null || value === undefined) {
+      return 'N/A';
     }
     if (typeof value === 'object') {
       return JSON.stringify(value);
@@ -672,11 +819,112 @@ const Search = () => {
     setTimeout(() => setCsvExportSuccess(false), 2000);
   };
 
+  const handleExportDtsxCSV = (dtsxResults) => {
+    const headers = [
+      'Serveur',
+      'Nom',
+      'Description',
+      'Jobs SQL',
+      'Créateur',
+      'Date de création'
+    ].join(',');
+
+    const rows = dtsxResults.map(dtsx => [
+      dtsx.server,
+      dtsx.object_name,
+      dtsx.description || '',
+      dtsx.job_count || 0,
+      dtsx.creator_name || '',
+      dtsx.creation_date ? new Date(dtsx.creation_date).toLocaleString('fr-FR') : ''
+    ].map(value => {
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    }).join(','));
+
+    const csvContent = `${headers}\n${rows.join('\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dtsx_${searchTerm}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setCsvExportSuccess(true);
+    setTimeout(() => setCsvExportSuccess(false), 2000);
+  };
+
+  // Fonctions pour les actions DTSX (sans visualisation)
+  const handleViewDtsxJobs = (dtsx) => {
+    // Pour l'instant, on affiche juste une alerte
+    alert(`Jobs utilisant ${dtsx.object_name} sur ${dtsx.server}`);
+  };
+
+  const handleViewDtsxDetails = async (dtsx) => {
+    try {
+      setSelectedDtsx(dtsx);
+      setDtsxDetailsDialogOpen(true);
+      setDtsxDetailsLoading(true);
+      setError(null);
+
+      // Utiliser le chemin complet du fichier si disponible, sinon utiliser l'API par serveur/nom
+      let response;
+      if (dtsx.file_path) {
+        // Appel direct avec le chemin du fichier
+        response = await fetch(`/api/search/dtsx-file`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ filePath: dtsx.file_path })
+        });
+      } else {
+        // Fallback vers l'API par serveur/nom
+        response = await fetch(`/api/search/dtsx/${dtsx.server}/${encodeURIComponent(dtsx.object_name)}`);
+      }
+      
+      if (!response.ok) { 
+        throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+      }
+      
+      const dtsxData = await response.json(); 
+      console.log('=== DTSX DATA DEBUG ==='); 
+      console.log('DTSX Data complète:', dtsxData);
+      console.log('DTSX Details:', dtsxData.dtsx);
+      console.log('Variables:', dtsxData.dtsx?.variables);
+      console.log('Package Parameters:', dtsxData.dtsx?.package_parameters);
+      console.log('Connection Managers:', dtsxData.dtsx?.connection_managers);
+      console.log('Executables:', dtsxData.dtsx?.executables);
+      console.log('=== FIN DEBUG ===');
+      setDtsxDetails(dtsxData.dtsx);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des détails DTSX:', error);
+      setError('Erreur lors de la récupération des détails du package DTSX');
+    } finally {
+      setDtsxDetailsLoading(false);
+    }
+  };
+
+  const handleOpenDtsxFile = (dtsx) => {
+    // Ouvrir le fichier DTSX dans l'explorateur de fichiers
+    const filePath = dtsx.file_path;
+    if (filePath) {
+      // Utiliser l'API Windows pour ouvrir le fichier
+      window.open(`file://${filePath}`, '_blank');
+    }
+  };
+
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Recherche
-      </Typography>
+      <Box display="flex" alignItems="center" gap={1} mb={2}>
+        <SearchIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+        <Typography variant="h5" component="h1">
+          Recherche
+        </Typography>
+      </Box>
 
       <Card sx={{ mb: 3 }}>
         <CardContent>
@@ -738,17 +986,43 @@ const Search = () => {
                 variant="contained"
                 startIcon={<SearchIcon />}
                 onClick={() => handleSearch(searchTerm)}
-                disabled={loading || !searchTerm.trim()}
+                disabled={dbLoading || dtsxLoading || !searchTerm.trim()}
               >
-                {loading ? 'Recherche...' : 'Rechercher'}
+                {dbLoading || dtsxLoading ? 'Recherche...' : 'Rechercher'}
               </Button>
             </Grid>
           </Grid>
 
+          {/* Indicateur pour rouvrir la section avancée */}
+          {!advancedMode && (
+            <Box mt={2} display="flex" justifyContent="center">
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ExpandMoreIcon />}
+                onClick={() => setAdvancedMode(true)}
+                sx={{ fontSize: '0.875rem' }}
+              >
+                Afficher les options avancées
+              </Button>
+            </Box>
+          )}
+
           {advancedMode && (
             <Box mt={2}>
-              <Grid container spacing={3}>
-                <Grid item xs={12} md={6}>
+              <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                <Typography variant="subtitle2">
+                  Options avancées
+                </Typography>
+                <IconButton
+                  size="small"
+                  onClick={() => setAdvancedMode(false)}
+                >
+                  <ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />
+                </IconButton>
+              </Box>
+              <Grid container spacing={3} alignItems="flex-start">
+                <Grid item xs={12} md={8}>
                   <Typography variant="subtitle2" gutterBottom>
                     Types d'objets à rechercher :
                   </Typography>
@@ -769,9 +1043,85 @@ const Search = () => {
                       </Grid>
                     ))}
                   </Grid>
+                  
+                  {/* Raccourcis de filtres */}
+                  <Box mt={2}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Raccourcis de filtres :
+                    </Typography>
+                    <Box display="flex" justifyContent="flex-start" gap={0.5} flexWrap="wrap">
+                      <Chip
+                        label="Packages DTSX"
+                        size="small"
+                        variant={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('DTSX_PACKAGE') && searchMode === 'complete' ? "filled" : "outlined"}
+                        color={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('DTSX_PACKAGE') && searchMode === 'complete' ? "primary" : "default"}
+                        onClick={() => {
+                          setSelectedObjectTypes(['DTSX_PACKAGE']);
+                          setSearchMode('complete');
+                        }}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                      <Chip
+                        label="Tables uniquement"
+                        size="small"
+                        variant={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('TABLE') && searchMode === 'fast' ? "filled" : "outlined"}
+                        color={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('TABLE') && searchMode === 'fast' ? "primary" : "default"}
+                        onClick={() => {
+                          setSelectedObjectTypes(['TABLE']);
+                          setSearchMode('fast');
+                        }}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                      <Chip
+                        label="Procédures uniquement"
+                        size="small"
+                        variant={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('PROCEDURE') && searchMode === 'fast' ? "filled" : "outlined"}
+                        color={selectedObjectTypes.length === 1 && selectedObjectTypes.includes('PROCEDURE') && searchMode === 'fast' ? "primary" : "default"}
+                        onClick={() => {
+                          setSelectedObjectTypes(['PROCEDURE']);
+                          setSearchMode('fast');
+                        }}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                      <Chip
+                        label="Tout sauf DTSX"
+                        size="small"
+                        variant={selectedObjectTypes.length === 4 && 
+                                 selectedObjectTypes.includes('TABLE') && 
+                                 selectedObjectTypes.includes('VIEW') && 
+                                 selectedObjectTypes.includes('PROCEDURE') && 
+                                 selectedObjectTypes.includes('FUNCTION') && 
+                                 !selectedObjectTypes.includes('DTSX_PACKAGE') && 
+                                 searchMode === 'fast' ? "filled" : "outlined"}
+                        color={selectedObjectTypes.length === 4 && 
+                               selectedObjectTypes.includes('TABLE') && 
+                               selectedObjectTypes.includes('VIEW') && 
+                               selectedObjectTypes.includes('PROCEDURE') && 
+                               selectedObjectTypes.includes('FUNCTION') && 
+                               !selectedObjectTypes.includes('DTSX_PACKAGE') && 
+                               searchMode === 'fast' ? "primary" : "default"}
+                        onClick={() => {
+                          setSelectedObjectTypes(['TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION']);
+                          setSearchMode('fast');
+                        }}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                      <Chip
+                        label="Tout réinitialiser"
+                        size="small"
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => {
+                          setSelectedObjectTypes(['TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION']);
+                          setSearchMode('fast');
+                        }}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                    </Box>
+                  </Box>
                 </Grid>
                 
-                <Grid item xs={12} md={6}>
+                <Grid item xs={12} md={4}>
                   <Typography variant="subtitle2" gutterBottom>
                     Mode de recherche :
                   </Typography>
@@ -786,7 +1136,7 @@ const Search = () => {
                               color="primary"
                             />
                           }
-                          label="Rapide (noms seulement)"
+                          label="Rapide"
                         />
                       </Grid>
                       <Grid item>
@@ -795,15 +1145,17 @@ const Search = () => {
                             <Checkbox
                               checked={searchMode === 'complete'}
                               onChange={() => setSearchMode('complete')}
-                              color="secondary"
+                              color="primary"
                             />
                           }
-                          label="Complète (avec code DDL)"
+                          label="Complet"
                         />
                       </Grid>
                     </Grid>
                   </FormControl>
                 </Grid>
+                
+
               </Grid>
             </Box>
           )}
@@ -816,13 +1168,18 @@ const Search = () => {
         </Alert>
       )}
 
-      {loading && <LinearProgress sx={{ mb: 2 }} />}
+      {(dbLoading || dtsxLoading) && (
+        <Box sx={{ mb: 2 }}>
+          {dbLoading && <LinearProgress sx={{ mb: 1 }} />}
+          {dtsxLoading && <LinearProgress />}
+        </Box>
+      )}
 
       {results.length > 0 && (
         <Box>
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
             <Typography variant="h6">
-              Résultats ({results.length} objets trouvés)
+              Résultats ({results.length} objets {dtsxResults.length > 0 ? ` + ${dtsxResults.length} packages SSIS` : ''})
             </Typography>
             <Button
               onClick={handleExportGlobalCSV}
@@ -1043,7 +1400,7 @@ const Search = () => {
         </Box>
       )}
 
-      {!loading && results.length === 0 && searchTerm && (
+      {!dbLoading && results.length === 0 && dtsxResults.length === 0 && searchTerm && (
         <Box textAlign="center" py={4}>
           <Typography variant="h6" color="textSecondary">
             Aucun résultat trouvé
@@ -1051,6 +1408,149 @@ const Search = () => {
           <Typography variant="body2" color="textSecondary">
             Essayez de modifier vos critères de recherche
           </Typography>
+        </Box>
+      )}
+
+      {/* Résultats DTSX */}
+      {selectedObjectTypes.includes('DTSX_PACKAGE') && dtsxResults.length > 0 && (
+        <Box mt={4}>
+          <Accordion defaultExpanded={false}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box display="flex" justifyContent="space-between" alignItems="center" width="100%">
+                <Box display="flex" alignItems="center" gap={2}>
+                  <DtsxIcon color="primary" />
+                  <Typography variant="h6">
+                    Packages SSIS ({dtsxResults.length})
+                  </Typography>
+                  {dtsxLoading && <CircularProgress size={20} />}
+                </Box>
+                <Button
+                  onClick={() => handleExportDtsxCSV(dtsxResults)}
+                  disabled={dtsxResults.length === 0}
+                  color={csvExportSuccess ? "success" : "primary"}
+                  variant={csvExportSuccess ? "contained" : "outlined"}
+                  size="small"
+                  startIcon={<CopyIcon />}
+                >
+                  {csvExportSuccess ? "Exporté !" : "Export CSV"}
+                </Button>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <TableContainer component={Paper}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>
+                        <TableSortLabel
+                          active={dtsxOrderBy === 'object_name'}
+                          direction={dtsxOrderBy === 'object_name' ? dtsxOrder : 'asc'}
+                          onClick={() => handleDtsxRequestSort('object_name')}
+                        >
+                          Nom du Package
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell>
+                        <TableSortLabel
+                          active={dtsxOrderBy === 'server'}
+                          direction={dtsxOrderBy === 'server' ? dtsxOrder : 'asc'}
+                          onClick={() => handleDtsxRequestSort('server')}
+                        >
+                          Serveur
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell>
+                        <TableSortLabel
+                          active={dtsxOrderBy === 'description'}
+                          direction={dtsxOrderBy === 'description' ? dtsxOrder : 'asc'}
+                          onClick={() => handleDtsxRequestSort('description')}
+                        >
+                          Description
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell>
+                        <TableSortLabel
+                          active={dtsxOrderBy === 'job_count'}
+                          direction={dtsxOrderBy === 'job_count' ? dtsxOrder : 'asc'}
+                          onClick={() => handleDtsxRequestSort('job_count')}
+                        >
+                          Jobs SQL
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell>
+                        Actions
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {sortResults(dtsxResults, dtsxOrderBy, dtsxOrder).map((dtsx, index) => (
+                      <TableRow key={index} hover>
+                        <TableCell>
+                          <Box display="flex" alignItems="center" gap={1}>
+                            <DtsxIcon color="primary" />
+                            <Typography variant="body1" fontWeight="medium">
+                              {dtsx.object_name}
+                            </Typography>
+                          </Box>
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={dtsx.server}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Box>
+                            <Typography variant="body2" color="textSecondary">
+                              {dtsx.description || 'Aucune description'}
+                            </Typography>
+                            {dtsx.creation_date && (
+                              <Typography variant="caption" color="textSecondary">
+                                Créé le : {new Date(dtsx.creation_date).toLocaleDateString('fr-FR')}
+                              </Typography>
+                            )}
+                          </Box>
+                        </TableCell>
+                        <TableCell>
+                          <Box display="flex" alignItems="center" gap={1}>
+                            <Typography variant="body2">
+                              {dtsx.job_count || 0} job(s)
+                            </Typography>
+                            {dtsx.jobs && dtsx.jobs.length > 0 && (
+                              <Tooltip title="Voir les jobs">
+                                <IconButton
+                                  size="small"
+                                  color="info"
+                                  onClick={() => handleViewDtsxJobs(dtsx)}
+                                >
+                                  <JobIcon />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Box>
+                        </TableCell>
+                        <TableCell>
+                          <Box display="flex" alignItems="center" gap={1}>
+                            <Tooltip title="Afficher les détails">
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                onClick={() => handleViewDtsxDetails(dtsx)}
+                              >
+                                <ViewIcon />
+                              </IconButton>
+                            </Tooltip>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </AccordionDetails>
+          </Accordion>
         </Box>
       )}
 
@@ -1424,7 +1924,7 @@ const Search = () => {
                               {column.is_primary_key === 1 && (
                                 <Chip label="PK" size="small" color="primary" sx={{ ml: 1, height: 16 }} />
                               )}
-                              {/* Debug: {JSON.stringify(column)} */}
+                              
                             </Box>
                           </TableCell>
                         ))}
@@ -1490,6 +1990,534 @@ const Search = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Dialogue Détails DTSX */}
+      <Dialog
+        open={dtsxDetailsDialogOpen}
+        onClose={() => setDtsxDetailsDialogOpen(false)}
+        maxWidth="xl"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box display="flex" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography variant="h6">
+                📦 {selectedDtsx?.object_name}
+              </Typography>
+              <Typography variant="body2" color="textSecondary">
+                {selectedDtsx?.server} • Package DTSX
+              </Typography>
+            </Box>
+            <Button 
+              onClick={() => setDtsxDetailsDialogOpen(false)}
+              startIcon={<InfoIcon />}
+              variant="outlined"
+              size="small"
+            >
+              Fermer
+            </Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {dtsxDetailsLoading ? (
+            <Box display="flex" flexDirection="column" alignItems="center" py={4}>
+              <CircularProgress sx={{ mb: 2 }} />
+              <Typography variant="body2" color="textSecondary" align="center">
+                Analyse du package DTSX en cours...<br/>
+                Extraction des informations détaillées...
+              </Typography>
+            </Box>
+          ) : dtsxDetails ? (
+            <Box>
+
+
+              {/* Paramètres */}
+              {dtsxDetails.package_parameters && dtsxDetails.package_parameters.length > 0 && (
+                <Accordion defaultExpanded={false}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <SettingsIcon color="primary" />
+                      <Typography variant="h6">
+                        Paramètres ({dtsxDetails.package_parameters.length})
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Nom</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Valeur</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {dtsxDetails.package_parameters.map((param, index) => (
+                            <TableRow key={index} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight="medium">
+                                  {param.name}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Box display="flex" alignItems="center" gap={1}>
+                                  <Typography variant="body2" sx={{ 
+                                    maxWidth: 350, 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    flex: 1
+                                  }} title={formatDtsxValue(param.value)}>
+                                    {formatDtsxValue(param.value)}
+                                  </Typography>
+                                  <Tooltip title="Copier la valeur">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleCopyText(formatDtsxValue(param.value))}
+                                      sx={{ p: 0.5 }}
+                                    >
+                                      <CopyIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Box>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </AccordionDetails>
+                </Accordion>
+              )}
+
+              {/* Connexions */}
+              {dtsxDetails.connection_managers && dtsxDetails.connection_managers.length > 0 && (
+                <Accordion defaultExpanded={false}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <LinkIcon color="primary" />
+                      <Typography variant="h6">
+                        Connexions ({dtsxDetails.connection_managers.length})
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Nom</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Type</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {dtsxDetails.connection_managers.map((conn, index) => (
+                            <TableRow key={index} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight="medium">
+                                  {conn.name}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Chip 
+                                  label={conn.type} 
+                                  size="small" 
+                                  color="secondary" 
+                                  variant="outlined"
+                                />
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </AccordionDetails>
+                </Accordion>
+              )}
+
+
+
+              {/* Variables */}
+              {dtsxDetails.variables && dtsxDetails.variables.length > 0 && (
+                <Accordion defaultExpanded={false}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <SettingsIcon color="primary" />
+                      <Typography variant="h6">
+                        Variables ({dtsxDetails.variables.length})
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Nom</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Valeur</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Expression</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {dtsxDetails.variables.map((var_, index) => (
+                            <TableRow key={index} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight="medium">
+                                  {var_.name}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Box display="flex" alignItems="center" gap={1}>
+                                  <Typography variant="body2" sx={{ 
+                                    maxWidth: 200, 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    flex: 1
+                                  }} title={formatDtsxValue(var_.value)}>
+                                    {formatDtsxValue(var_.value)}
+                                  </Typography>
+                                  <Tooltip title="Copier la valeur">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleCopyText(formatDtsxValue(var_.value))}
+                                      sx={{ p: 0.5 }}
+                                    >
+                                      <CopyIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                {var_.expression && (
+                                  <Box display="flex" alignItems="center" gap={1}>
+                                    <Typography variant="body2" sx={{ 
+                                      maxWidth: 250, 
+                                      overflow: 'hidden', 
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      fontStyle: 'italic',
+                                      color: 'text.secondary',
+                                      flex: 1
+                                    }} title={var_.expression}>
+                                      {var_.expression}
+                                    </Typography>
+                                    <Tooltip title="Copier l'expression">
+                                      <IconButton
+                                        size="small"
+                                        onClick={() => handleCopyText(var_.expression)}
+                                        sx={{ p: 0.5 }}
+                                      >
+                                        <CopyIcon fontSize="small" />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </Box>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </AccordionDetails>
+                </Accordion>
+              )}
+
+              {/* Etapes */}
+              {dtsxDetails.executables && dtsxDetails.executables.length > 0 && (
+                <Accordion defaultExpanded={false}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <PlayArrowIcon color="primary" />
+                      <Typography variant="h6">
+                        Etapes ({dtsxDetails.executables.length})
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {dtsxDetails.executables
+                      .map((task, index) => {
+                      const taskColor = getTaskTypeColor(task.type);
+                      return (
+                        <Accordion key={index} sx={{ 
+                          mb: 1,
+                          opacity: task.disabled ? 0.6 : 1,
+                          '& .MuiAccordionSummary-root': {
+                            borderLeft: `4px solid`,
+                            borderLeftColor: task.disabled ? 'grey.400' : `${taskColor}.main`,
+                            backgroundColor: task.disabled ? 'grey.100' : `${taskColor}.50`
+                          }
+                        }}>
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                          <Box display="flex" alignItems="center" gap={1} width="100%">
+                            <Box display="flex" alignItems="center" gap={1} flex={1}>
+                              <Typography variant="subtitle1" fontWeight="medium">
+                                {task.name}
+                              </Typography>
+                              {task.disabled && (
+                                <Chip 
+                                  label="Désactivée" 
+                                  size="small" 
+                                  color="default" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.7rem' }}
+                                />
+                              )}
+                            </Box>
+                            {task.description && (
+                              <Typography variant="body2" color="textSecondary" sx={{ flex: 1 }}>
+                                {task.description}
+                              </Typography>
+                            )}
+                          </Box>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Grid container spacing={2}>                         
+                            {/* Détails spécifiques selon le type de tâche */}
+                            {task.Operation && (
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Opération
+                                </Typography>
+                                <Chip label={task.Operation} size="small" color="secondary" />
+                              </Grid>
+                            )}
+                            
+                            {task.Source && (
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Source
+                                </Typography>
+                                <Typography variant="body2" sx={{ 
+                                  wordBreak: 'break-all',
+                                  backgroundColor: 'grey.50',
+                                  p: 1,
+                                  borderRadius: 1
+                                }}>
+                                  {task.Source}
+                                </Typography>
+                              </Grid>
+                            )}
+                            
+                            {task.Destination && (
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Destination
+                                </Typography>
+                                <Typography variant="body2" sx={{ 
+                                  wordBreak: 'break-all',
+                                  backgroundColor: 'grey.50',
+                                  p: 1,
+                                  borderRadius: 1
+                                }}>
+                                  {task.Destination}
+                                </Typography>
+                              </Grid>
+                            )}
+                            
+                            {task.SqlStatementSource && (
+                              <Grid item xs={12}>
+                                <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                                  <Typography variant="subtitle2" color="primary">
+                                    Requête SQL
+                                  </Typography>
+                                  <Tooltip title="Copier la requête SQL">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleCopyText(task.SqlStatementSource)}
+                                      sx={{ p: 0.5 }}
+                                    >
+                                      <CopyIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Box>
+                                <Box sx={{ 
+                                  backgroundColor: '#f8f9fa',
+                                  p: 1.5,
+                                  maxHeight: 200,
+                                  overflow: 'auto'
+                                }}>
+                                  <SyntaxHighlighter
+                                    language="sql"
+                                    style={vs}
+                                    customStyle={{
+                                      backgroundColor: 'transparent',
+                                      padding: 0,
+                                      margin: 0,
+                                      fontSize: '0.875rem',
+                                      color: '#000000'
+                                    }}
+                                  >
+                                    {task.SqlStatementSource}
+                                  </SyntaxHighlighter>
+                                </Box>
+                              </Grid>
+                            )}
+                            
+                            {task.Connection && (
+                              <Grid item xs={12} md={6}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Connexion
+                                </Typography>
+                                <Typography variant="body2" gutterBottom>
+                                  {task.Connection}
+                                </Typography>
+                              </Grid>
+                            )}
+                            
+                            {task.Language && (
+                              <Grid item xs={12} md={6}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Langage
+                                </Typography>
+                                <Chip label={task.Language} size="small" color="info" />
+                              </Grid>
+                            )}
+                            
+                            {task.ScriptCode && (  
+                              <Grid item xs={12}>
+                                <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                                  <Typography variant="subtitle2" color="primary">
+                                    Code Source
+                                  </Typography>
+                                  <Tooltip title="Copier le code source">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleCopyText(task.ScriptCode)}
+                                      sx={{ p: 0.5 }}
+                                    > 
+                                      <CopyIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Box>
+                                <Box sx={{ 
+                                  backgroundColor: '#f8f9fa',
+                                  p: 1.5,
+                                  maxHeight: 300,
+                                  overflow: 'auto'
+                                }}>
+                                  <SyntaxHighlighter
+                                    language={task.Language === 'C#' ? 'csharp' : 'vbnet'}
+                                    style={vs}
+                                    customStyle={{
+                                      backgroundColor: 'transparent',
+                                      padding: 0,
+                                      margin: 0,
+                                      fontSize: '0.875rem',
+                                      color: '#000000'
+                                    }}
+                                  >
+                                    {task.ScriptCode}
+                                  </SyntaxHighlighter>
+                                </Box>
+                              </Grid>
+                            )}
+                            
+                            {task.Components && task.Components.length > 0 && (
+                              <Grid item xs={12}>
+                                <Typography variant="subtitle2" color="primary" gutterBottom>
+                                  Composants Data Flow ({task.Components.length})
+                                </Typography>
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                  {task.Components.map((comp, compIndex) => (
+                                    <Chip 
+                                      key={compIndex}
+                                      label={`${comp.Name} (${comp.Type})`}
+                                      size="small"
+                                      color="secondary"
+                                      variant="outlined"
+                                    />
+                                  ))}
+                                </Box>
+                              </Grid>
+                            )}
+                          </Grid>
+                        </AccordionDetails>
+                      </Accordion>
+                    );
+                    })}
+                  </AccordionDetails>
+                </Accordion>
+              )}
+
+              {/* Contraintes de Précédence */}
+              {dtsxDetails.PrecedenceConstraints && dtsxDetails.PrecedenceConstraints.length > 0 && (
+                <Accordion>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <LinkIcon color="primary" />
+                      <Typography variant="h6">
+                        Contraintes de Précédence ({dtsxDetails.PrecedenceConstraints.length})
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Nom</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>De</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Vers</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Expression</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {dtsxDetails.PrecedenceConstraints.map((constraint, index) => (
+                            <TableRow key={index} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight="medium">
+                                  {constraint.Name}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" color="textSecondary">
+                                  {constraint.FromExecutable}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" color="textSecondary">
+                                  {constraint.ToExecutable}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ 
+                                  maxWidth: 300, 
+                                  overflow: 'hidden', 
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }} title={constraint.Expression}>
+                                  {constraint.Expression || 'N/A'}
+                                </Typography>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </AccordionDetails>
+                </Accordion>
+              )}
+            </Box>
+          ) : (
+            <Box textAlign="center" py={4}>
+              <DtsxIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+              <Typography variant="h6" color="textSecondary" gutterBottom>
+                Aucune donnée trouvée
+              </Typography>
+              <Typography variant="body2" color="textSecondary">
+                Impossible de récupérer les détails du package DTSX
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDtsxDetailsDialogOpen(false)}>
+            Fermer
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 };

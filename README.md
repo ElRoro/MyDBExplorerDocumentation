@@ -7,6 +7,7 @@ Application de gestion et documentation de bases de données avec support pour S
 ## 🚀 Fonctionnalités
 
 - **Recherche** : Tables, vues, procédures stockées, fonctions
+- **Recherche DTSX** : Packages SSIS et correspondance avec les SQL Jobs
 - **Gestion des connexions** : Support SSH, activation/désactivation
 - **Documentation** : Commentaires sur les objets de base de données
 - **Interface moderne** : React + Material-UI
@@ -112,7 +113,9 @@ npm run migrate-indexes
 - `PATCH /api/connections/:id/toggle` - Activer/désactiver
 
 ### Recherche
-- `GET /api/search?q=terme` - Rechercher des objets
+- `POST /api/search` - Rechercher des objets (incluant les DTSX)
+- `GET /api/search/dtsx/:server/:filename` - Obtenir les détails d'un DTSX
+- `GET /api/search/dtsx/statistics/:connectionId` - Statistiques d'utilisation des DTSX
 
 ### Commentaires
 - `GET /api/comments` - Liste des commentaires

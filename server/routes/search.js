@@ -1,13 +1,24 @@
 const express = require('express');
 const router = express.Router();
+
+// Endpoint pour vérifier si la recherche DTSX est disponible
+router.get('/dtsx-available', (req, res) => {
+  res.json({ available: DtsxSearcher.isDtsxAvailable() });
+});
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../database/init');
 const { DatabaseConnector } = require('../utils/databaseConnector');
+const DtsxSearcher = require('../utils/dtsxSearcher');
+const JobDtsxMatcher = require('../utils/jobDtsxMatcher');
+
 const dbConnector = new DatabaseConnector();
+const dtsxSearcher = new DtsxSearcher();
+const jobDtsxMatcher = new JobDtsxMatcher();
 
 // Recherche d'objets
 router.post('/', async (req, res) => {
-  const { searchTerm, connectionId, databaseName, searchMode = 'fast' } = req.body;
+  const { searchTerm, connectionId, databaseName, searchMode = 'fast', includeDtsx = true, objectTypes } = req.body;
 
   if (!searchTerm) {
     return res.status(400).json({ error: 'Le terme de recherche est obligatoire' });
@@ -16,6 +27,7 @@ router.post('/', async (req, res) => {
   try {
     let results = [];
     let connections = [];
+    let dtsxResults = [];
 
     // Si une connexion spécifique est demandée
     if (connectionId) {
@@ -68,13 +80,53 @@ router.post('/', async (req, res) => {
 
             results = results.concat(enrichedResults);
           } catch (dbError) {
-            console.error(`Erreur lors de la recherche dans ${dbName}:`, dbError.message);
-            // Continuer avec les autres bases de données
+            // Erreur silencieuse - continuer avec les autres bases de données
           }
         }
       } catch (connError) {
-        console.error(`Erreur lors de la recherche dans ${connection.name}:`, connError.message);
-        // Continuer avec les autres connexions
+        // Erreur silencieuse - continuer avec les autres connexions
+      }
+    }
+
+    // Recherche dans les fichiers DTSX si activée
+    if (includeDtsx) {
+      try {
+        // Pour les DTSX, on ne prend que le serveur de la connexion sélectionnée
+        let serverNames = [];
+        
+        if (connectionId) {
+          const selectedConnection = connections.find(c => c.id === connectionId);
+          if (selectedConnection && selectedConnection.host) {
+            serverNames = [selectedConnection.host];
+          }
+        }
+        
+        // Pour la recherche normale, si includeDtsx est true, on recherche dans tous les DTSX
+        // Pour la recherche avancée, on respecte les objectTypes
+        const dtsxObjectTypes = objectTypes ? ['DTSX_PACKAGE'] : null;
+        dtsxResults = await dtsxSearcher.searchInDtsxFiles(searchTerm, serverNames, searchMode, dtsxObjectTypes);
+        
+        // Enrichir les résultats DTSX avec les informations des jobs
+        for (const dtsxResult of dtsxResults) {
+          try {
+            // En mode avancé, on utilise connectionIds[0] s'il existe
+            const selectedConnectionId = connectionIds && connectionIds.length === 1 ? connectionIds[0] : connectionId;
+            
+            if (selectedConnectionId) {
+              const selectedConnection = connections.find(c => c.id === selectedConnectionId);
+              if (selectedConnection) {
+                const jobs = await jobDtsxMatcher.findJobsUsingDtsx(selectedConnection, dtsxResult.name);
+                dtsxResult.jobs = jobs;
+                dtsxResult.job_count = jobs.length;
+              }
+            }
+          } catch (error) {
+            dtsxResult.jobs = [];
+            dtsxResult.job_count = 0;
+          }
+        }
+      } catch (error) {
+        // Erreur silencieuse
       }
     }
 
@@ -89,15 +141,16 @@ router.post('/', async (req, res) => {
 
     res.json({
       results,
-      total: results.length,
+      dtsx_results: dtsxResults,
+      total: results.length + dtsxResults.length,
       searchTerm,
       connectionId,
       databaseName,
-      searchMode
+      searchMode,
+      includeDtsx
     });
 
   } catch (error) {
-    console.error('Erreur lors de la recherche:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -128,7 +181,8 @@ router.post('/advanced', async (req, res) => {
     databaseNames,
     objectTypes,
     schemaNames,
-    searchMode = 'fast'
+    searchMode = 'fast',
+    includeDtsx = true
   } = req.body;
 
   if (!searchTerm) {
@@ -138,6 +192,7 @@ router.post('/advanced', async (req, res) => {
   try {
     let results = [];
     let connections = [];
+    let dtsxResults = [];
 
     // Obtenir les connexions spécifiées ou toutes
     if (connectionIds && connectionIds.length > 0) {
@@ -197,27 +252,67 @@ router.post('/advanced', async (req, res) => {
 
             results = results.concat(enrichedResults);
           } catch (dbError) {
-            console.error(`Erreur lors de la recherche dans ${dbName}:`, dbError.message);
+            // Erreur silencieuse - continuer avec les autres bases de données
           }
         }
       } catch (connError) {
-        console.error(`Erreur lors de la recherche dans ${connection.name}:`, connError.message);
+        // Erreur silencieuse - continuer avec les autres connexions
+      }
+    }
+
+    // Recherche dans les fichiers DTSX si activée
+    if (includeDtsx) {
+      try {
+        // Pour les DTSX, on ne prend que le serveur de la connexion sélectionnée
+        let serverNames = [];
+        
+        if (connectionIds && connectionIds.length === 1) {
+          const selectedConnection = connections.find(c => c.id === connectionIds[0]);
+          if (selectedConnection && selectedConnection.host) {
+            serverNames = [selectedConnection.host];
+          }
+        }
+        
+        dtsxResults = await dtsxSearcher.searchInDtsxFiles(searchTerm, serverNames);
+        
+        // Enrichir les résultats DTSX avec les informations des jobs
+        for (const dtsxResult of dtsxResults) {
+          try {
+            // En mode avancé, on utilise connectionIds[0] s'il existe
+            const selectedConnectionId = connectionIds && connectionIds.length === 1 ? connectionIds[0] : connectionId;
+            
+            if (selectedConnectionId) {
+              const selectedConnection = connections.find(c => c.id === selectedConnectionId);
+              if (selectedConnection) {
+                const jobs = await jobDtsxMatcher.findJobsUsingDtsx(selectedConnection, dtsxResult.name);
+                dtsxResult.jobs = jobs;
+                dtsxResult.job_count = jobs.length;
+              }
+            }
+          } catch (error) {
+            dtsxResult.jobs = [];
+            dtsxResult.job_count = 0;
+          }
+        }
+      } catch (error) {
+        // Erreur silencieuse
       }
     }
 
     res.json({
       results,
-      total: results.length,
+      dtsx_results: dtsxResults,
+      total: results.length + dtsxResults.length,
       searchTerm,
       connectionIds,
       databaseNames,
       objectTypes,
       schemaNames,
-      searchMode
+      searchMode,
+      includeDtsx
     });
 
   } catch (error) {
-    console.error('Erreur lors de la recherche avancée:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -252,7 +347,6 @@ router.get('/ddl/:connectionId/:databaseName/:objectType/:objectName', async (re
     res.json({ ddl, objectName, objectType, databaseName, schemaName: schema_name });
 
   } catch (error) {
-    console.error('Erreur lors de la récupération du DDL:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -296,7 +390,6 @@ router.get('/dependencies/:connectionId/:databaseName/:objectType/:objectName', 
     });
 
   } catch (error) {
-    console.error('Erreur lors de la récupération des dépendances:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -333,7 +426,141 @@ router.get('/data/:connectionId/:databaseName/:tableName', async (req, res) => {
     res.json(tableData);
 
   } catch (error) {
-    console.error('Erreur lors de la récupération des données:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Obtenir les détails d'un fichier DTSX 
+router.get('/dtsx/:server/:filename', async (req, res) => {
+  const { server, filename } = req.params;
+
+  try {
+    const filePath = path.join(dtsxSearcher.dtsxRootPath, server, filename);
+    const dtsxDetails = await dtsxSearcher.getDtsxDetails(filePath);
+
+    if (!dtsxDetails) {
+      return res.status(404).json({ error: 'Fichier DTSX non trouvé' });
+    }
+
+    // Chercher les jobs qui utilisent ce DTSX
+    const connections = await new Promise((resolve, reject) => {
+      db.all('SELECT * FROM connections WHERE enabled = 1 AND type = "sqlserver" ORDER BY name', (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    const dtsxJobs = [];
+    for (const connection of connections) {
+      try {
+        const jobs = await jobDtsxMatcher.findJobsUsingDtsx(connection, filename);
+        dtsxJobs.push(...jobs.map(job => ({
+          ...job,
+          connection_id: connection.id,
+          connection_name: connection.name
+        })));
+      } catch (jobError) {
+        // Erreur silencieuse
+      }
+    }
+
+    res.json({
+      dtsx: dtsxDetails,
+      jobs: dtsxJobs,
+      job_count: dtsxJobs.length,
+      server: server,
+      filename: filename
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Obtenir les statistiques d'utilisation des DTSX
+router.get('/dtsx/statistics/:connectionId', async (req, res) => {
+  const { connectionId } = req.params;
+
+  try {
+    const connection = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM connections WHERE id = ?', [connectionId], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    if (!connection) {
+      return res.status(404).json({ error: 'Connexion non trouvée' });
+    }
+
+    if (connection.type !== 'sqlserver') {
+      return res.status(400).json({ error: 'Cette fonctionnalité n\'est disponible que pour SQL Server' });
+    }
+
+    const statistics = await jobDtsxMatcher.getDtsxUsageStatistics(connection);
+
+    res.json({
+      statistics,
+      total_dtsx: statistics.length,
+      connection: connection.name
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Obtenir les détails d'un fichier DTSX par chemin complet
+router.post('/dtsx-file', async (req, res) => {
+  const { filePath } = req.body;
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'Le chemin du fichier est obligatoire' });
+  }
+
+  try {
+    const dtsxDetails = await dtsxSearcher.getDtsxDetails(filePath);
+
+    if (!dtsxDetails) {
+      return res.status(404).json({ error: 'Fichier DTSX non trouvé' });
+    }
+
+    // Extraire le nom du fichier et le serveur du chemin
+    const filename = path.basename(filePath);
+    const server = path.basename(path.dirname(filePath));
+
+    // Chercher les jobs qui utilisent ce DTSX
+    const connections = await new Promise((resolve, reject) => {
+      db.all('SELECT * FROM connections WHERE enabled = 1 AND type = "sqlserver" ORDER BY name', (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    const dtsxJobs = [];
+    for (const connection of connections) {
+      try {
+        const jobs = await jobDtsxMatcher.findJobsUsingDtsx(connection, filename);
+        dtsxJobs.push(...jobs.map(job => ({
+          ...job,
+          connection_id: connection.id,
+          connection_name: connection.name
+        })));
+      } catch (jobError) {
+        // Erreur silencieuse
+      }
+    }
+
+    res.json({
+      dtsx: dtsxDetails,
+      jobs: dtsxJobs,
+      job_count: dtsxJobs.length,
+      server: server,
+      filename: filename,
+      file_path: filePath
+    });
+
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

@@ -905,7 +905,12 @@ const Connections = () => {
   return (
     <Box>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Typography variant="h4">Gestion des connexions</Typography>
+        <Box display="flex" alignItems="center" gap={1}>
+          <StorageIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+          <Typography variant="h5" component="h1">
+            Gestion des connexions
+          </Typography>
+        </Box>
         <Button
           variant="contained"
           startIcon={<AddIcon />}

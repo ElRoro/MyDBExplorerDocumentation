@@ -1,6 +1,16 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+// Configuration de l'URL de base selon l'environnement
+const getBaseURL = () => {
+  if (process.env.NODE_ENV === 'production') {
+    // En production, utiliser le chemin relatif pour l'API
+    return '/api';
+  }
+  // En développement, utiliser l'URL locale
+  return process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+};
+
+const API_BASE_URL = getBaseURL();
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -28,7 +38,7 @@ api.interceptors.response.use(
 // Service des connexions
 export const connectionsAPI = {
   getAll: () => api.get('/connections'),
-  getActive: () => api.get('/connections/active'),
+  getActiveConnections: () => api.get('/connections/active'),
   getById: (id) => api.get(`/connections/${id}`),
   create: (data) => api.post('/connections', data),
   update: (id, data) => api.put(`/connections/${id}`, data),
@@ -78,15 +88,41 @@ export const databasesAPI = {
   getStats: () => api.get('/databases/stats'),
 };
 
+// Service des notes
+export const notesAPI = {
+  getAll: () => api.get('/notes'),
+  getById: (id) => api.get(`/notes/${id}`),
+  create: (data) => api.post('/notes', data),
+  update: (id, data) => api.put(`/notes/${id}`, data),
+  deleteNote: (id) => api.delete(`/notes/${id}`),
+  search: (params) => api.get('/notes', { params }),
+};
+
+// Service des paramètres
+export const settingsAPI = {
+  getSettings: () => api.get('/settings'),
+  updateSettings: (data) => api.put('/settings', data),
+};
+
 export const jobsAPI = {
   getAll: () => api.get('/jobs'),
   getStatus: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/status`),
+  getCurrentStep: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/current-step`),
   getSteps: (connectionId, jobId) => api.get(`/jobs/${connectionId}/${jobId}/steps`),
   getStepDetails: (connectionId, jobId, stepId) => api.get(`/jobs/${connectionId}/${jobId}/steps/${stepId}/details`),
+  getCatalogLogs: (connectionId, jobId, stepId, executionId = null, executionTime = null, loadMore = false) => api.get(`/jobs/${connectionId}/${jobId}/steps/${stepId}/catalog-logs`, { params: { executionId, executionTime, loadMore } }),
+  getJobLogs: (connectionId, jobId, stepId, executionTime = null, loadMore = false) => api.get(`/jobs/${connectionId}/${jobId}/steps/${stepId}/job-logs`, { params: { executionTime, loadMore } }),
   updateStepCommand: (connectionId, jobId, stepId, command) => api.put(`/jobs/${connectionId}/${jobId}/steps/${stepId}/command`, { command }),
   startJob: (connectionId, jobId, stepId = null) => api.post(`/jobs/${connectionId}/${jobId}/start`, { stepId }),
   stopJob: (connectionId, jobId) => api.post(`/jobs/${connectionId}/${jobId}/stop`),
   toggleJob: (connectionId, jobId, enabled) => api.post(`/jobs/${connectionId}/${jobId}/toggle`, { enabled })
+};
+
+// Service des requêtes multi-bases
+export const multiQueryAPI = {
+  execute: (data) => api.post('/multi-query/execute', data),
+  validate: (query) => api.post('/multi-query/validate', { query }),
+  getHistory: () => api.get('/multi-query/history'),
 };
 
 export default api; 

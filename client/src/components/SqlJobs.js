@@ -23,6 +23,7 @@ import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryIcon from '@mui/icons-material/History';
 import SettingsIcon from '@mui/icons-material/Settings';
+import ErrorIcon from '@mui/icons-material/Error';
 import { SvgIcon } from '@mui/material';
 
 // Couleurs prédéfinies pour les tags
@@ -105,6 +106,30 @@ function parseSsisCommand(command) {
   return { packagePath, params };
 }
 
+// Fonction pour formater le temps d'exécution
+function formatExecutionTime(executionTime) {
+  if (!executionTime) return '';
+  
+  try {
+    // Si le format est DD/MM/YYYYTHH:mm:ss
+    if (executionTime.includes('/')) {
+      const parts = executionTime.split('T')[0].split('/');
+      const day = parts[0];
+      const month = parts[1];
+      const year = parts[2];
+      const time = executionTime.split('T')[1];
+      const date = new Date(`${year}-${month}-${day}T${time}`);
+      return date.toLocaleString('fr-FR');
+    } else {
+      // Format standard
+      return new Date(executionTime).toLocaleString('fr-FR');
+    }
+  } catch (error) {
+    console.error('Erreur lors du formatage de la date:', error);
+    return executionTime; // Retourner la valeur originale si le parsing échoue
+  }
+}
+
 function Row({ job, connectionName, onJobAction, showServerColumn }) {
   const [open, setOpen] = useState(false);
   const [steps, setSteps] = useState([]);
@@ -127,6 +152,11 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
   const [editingCommand, setEditingCommand] = useState(false);
   const [editedCommand, setEditedCommand] = useState('');
   const [savingCommand, setSavingCommand] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logsError, setLogsError] = useState(null);
+  const [selectedExecution, setSelectedExecution] = useState(null);
+  const [logsInitialized, setLogsInitialized] = useState(false);
 
   // Ne pas charger les steps au montage
   // Charger les steps uniquement lors de l'ouverture du collapse
@@ -178,6 +208,84 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
     }
   }, [job.connectionId, job.id]);
 
+  // Fonction pour rafraîchir l'information sur l'étape en cours
+  const refreshCurrentStep = useCallback(async () => {
+    if (job.isCurrentlyRunning) {
+      try {
+        const response = await jobsAPI.getCurrentStep(job.connectionId, job.id);
+        if (response.data) {
+          job.currentStep = response.data;
+        }
+      } catch (err) {
+        // Ne pas afficher les erreurs de connexion dans la console pour éviter le spam
+        // Ces erreurs sont normales quand le job n'est plus en cours ou que la connexion est temporairement indisponible
+        if (err.response && err.response.status === 500) {
+          // Erreur serveur - log silencieux
+          console.debug('Erreur serveur lors du rafraîchissement de l\'étape en cours:', err.message);
+        } else if (err.code === 'ECONNABORTED' || err.message.includes('aborted')) {
+          // Erreur de connexion interrompue - log silencieux
+          console.debug('Connexion interrompue lors du rafraîchissement de l\'étape en cours');
+        } else {
+          // Autres erreurs - log normal
+          console.error('Erreur lors du rafraîchissement de l\'étape en cours:', err);
+        }
+      }
+    }
+  }, [job.connectionId, job.id, job.isCurrentlyRunning]);
+
+  // Fonction pour rafraîchir avec retry et backoff
+  const refreshCurrentStepWithRetry = useCallback(async (retryCount = 0) => {
+    if (job.isCurrentlyRunning) {
+      try {
+        const response = await jobsAPI.getCurrentStep(job.connectionId, job.id);
+        if (response.data) {
+          job.currentStep = response.data;
+        }
+        // Reset du compteur de retry en cas de succès
+        return true;
+      } catch (err) {
+        // Gestion des erreurs avec retry
+        if (err.code === 'ECONNABORTED' || err.message.includes('aborted') || 
+            (err.response && err.response.status === 500)) {
+          
+          if (retryCount < 3) {
+            // Attendre avec backoff exponentiel (1s, 2s, 4s)
+            const delay = Math.pow(2, retryCount) * 1000;
+            console.debug(`Retry ${retryCount + 1}/3 dans ${delay}ms pour l'étape en cours`);
+            
+            setTimeout(() => {
+              refreshCurrentStepWithRetry(retryCount + 1);
+            }, delay);
+            return false;
+          } else {
+            console.debug('Nombre maximum de retry atteint pour l\'étape en cours');
+            return false;
+          }
+        } else {
+          // Autres erreurs - log normal
+          console.error('Erreur lors du rafraîchissement de l\'étape en cours:', err);
+          return false;
+        }
+      }
+    }
+    return true;
+  }, [job.connectionId, job.id, job.isCurrentlyRunning]);
+
+  // Effet pour rafraîchir périodiquement l'étape en cours
+  useEffect(() => {
+    if (job.isCurrentlyRunning && open) {
+      // Rafraîchir immédiatement avec retry
+      refreshCurrentStepWithRetry();
+      
+      // Puis rafraîchir toutes les 10 secondes (au lieu de 5) pour réduire la charge
+      const interval = setInterval(() => {
+        refreshCurrentStepWithRetry();
+      }, 10000);
+      
+      return () => clearInterval(interval);
+    }
+  }, [job.isCurrentlyRunning, open, refreshCurrentStepWithRetry]);
+
   const fetchStepDetails = async (step) => {
     setSelectedStep(step);
     setStepDetailsDialogOpen(true);
@@ -186,16 +294,103 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
     setStepDetails(null);
     setEditingCommand(false);
     setEditedCommand('');
+    setLogs([]);
+    setLogsError(null);
+    setLogsInitialized(false);
     
     try {
+      // Charger d'abord les détails de l'étape
       const response = await jobsAPI.getStepDetails(job.connectionId, job.id, step.id);
       setStepDetails(response.data);
       setEditedCommand(response.data.step.command);
+      setLoadingStepDetails(false);
+      
+      // Charger les logs combinés en arrière-plan
+      // Utiliser l'heure de la dernière exécution si disponible
+      const lastExecution = response.data.history && response.data.history.length > 0 ? response.data.history[0] : null;
+      const executionTime = lastExecution ? `${lastExecution.runDate}T${lastExecution.runTime}` : null;
+      
+      // Charger les logs de manière asynchrone sans bloquer l'interface
+      fetchCombinedLogs(step.id, executionTime);
     } catch (err) {
       console.error('Erreur lors du chargement des détails de la step:', err);
       setStepDetailsError(err.message || 'Impossible de charger les détails de l\'étape');
-    } finally {
       setLoadingStepDetails(false);
+    }
+  };
+
+  const fetchCombinedLogs = async (stepId, executionTime = null, loadMore = false) => {
+    setLoadingLogs(true);
+    setLogsError(null);
+    setSelectedExecution(executionTime);
+    
+    try {
+      // Essayer d'abord de récupérer les logs du catalogue
+      let catalogLogs = [];
+      try {
+        const catalogResponse = await jobsAPI.getCatalogLogs(job.connectionId, job.id, stepId, null, executionTime, loadMore);
+        catalogLogs = catalogResponse.data || [];
+        console.log(`📋 Logs du catalogue récupérés: ${catalogLogs.length}`);
+      } catch (catalogErr) {
+        console.warn('Impossible de récupérer les logs du catalogue:', catalogErr.message);
+        // Continuer avec les logs du job
+      }
+
+      // Si pas de logs du catalogue, récupérer les logs du job
+      let jobLogs = [];
+      if (catalogLogs.length === 0) {
+        try {
+          const jobResponse = await jobsAPI.getJobLogs(job.connectionId, job.id, stepId, executionTime, loadMore);
+          jobLogs = jobResponse.data || [];
+          console.log(`🔧 Logs du job récupérés: ${jobLogs.length}`);
+        } catch (jobErr) {
+          console.error('Erreur lors du chargement des logs du job:', jobErr);
+          setLogsError(jobErr.message || 'Impossible de charger les logs');
+        }
+      }
+
+      // Combiner et formater les logs
+      let combinedLogs = [];
+      
+      if (catalogLogs.length > 0) {
+        // Utiliser les logs du catalogue avec leur format
+        combinedLogs = catalogLogs.map(log => ({
+          ...log,
+          source: 'catalog',
+          displayTime: new Date(log.messageTime).toLocaleString('fr-FR'),
+          displayType: log.messageTypeDesc || `Type ${log.messageType}`,
+          isError: log.messageType === 120,
+          isWarning: log.messageType === 110
+        }));
+      } else if (jobLogs.length > 0) {
+        // Utiliser les logs du job avec leur format
+        combinedLogs = jobLogs.map(log => ({
+          ...log,
+          source: 'job',
+          displayTime: `${log.runDate} ${log.runTime}`,
+          displayType: log.runStatusDesc,
+          isError: log.runStatus === 0,
+          isWarning: log.runStatus === 2,
+          message: log.message || `Exécution ${log.runStatusDesc.toLowerCase()}`
+        }));
+      }
+
+      if (loadMore) {
+        // Ajouter les nouveaux logs aux logs existants
+        setLogs(prevLogs => [...prevLogs, ...combinedLogs]);
+      } else {
+        // Remplacer les logs existants
+        setLogs(combinedLogs);
+        setLogsInitialized(true);
+      }
+      
+      console.log(`📊 Logs combinés: ${combinedLogs.length} (catalogue: ${catalogLogs.length}, job: ${jobLogs.length})`);
+      
+    } catch (err) {
+      console.error('Erreur lors du chargement des logs combinés:', err);
+      setLogsError(err.message || 'Impossible de charger les logs');
+    } finally {
+      setLoadingLogs(false);
     }
   };
 
@@ -552,9 +747,26 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
         <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={8}>
           <Collapse in={open} timeout="auto" unmountOnExit>
             <Box sx={{ margin: 2 }}>
-              <Typography variant="h6" gutterBottom component="div">
-                Étapes du job
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                <Typography variant="h6" component="div">
+                  Étapes du job
+                </Typography>
+                {job.isCurrentlyRunning && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip 
+                      label="Job en cours d'exécution" 
+                      color="primary" 
+                      size="small"
+                      sx={{ animation: 'pulse 2s infinite' }}
+                    />
+                    {job.currentStep && (
+                      <Typography variant="body2" color="textSecondary">
+                        Étape actuelle: {job.currentStep.stepName || `Étape ${job.currentStep.stepId}`}
+                      </Typography>
+                    )}
+                  </Box>
+                )}
+              </Box>
               {loadingSteps ? (
                 <Box display="flex" justifyContent="center" p={2}>
                   <CircularProgress size={24} />
@@ -580,13 +792,11 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                   <TableHead>
                     <TableRow>
                       <TableCell width="5%">#</TableCell>
-                      <TableCell width="20%">Nom</TableCell>
-                      <TableCell width="12%">Sous-système</TableCell>
-                      <TableCell width="15%">Nom Package</TableCell>
-                      <TableCell width="12%">Dernier statut</TableCell>
-                      <TableCell width="15%">Dernière exécution</TableCell>
-                      <TableCell width="15%">Message</TableCell>
-                      <TableCell width="6%">Actions</TableCell>
+                      <TableCell width="25%">Nom</TableCell>
+                      <TableCell width="15%">Dernier statut</TableCell>
+                      <TableCell width="20%">Dernière exécution</TableCell>
+                      <TableCell width="25%">Message</TableCell>
+                      <TableCell width="10%">Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -601,7 +811,17 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                           <TableCell>
                             <Tooltip title={step.command} placement="top">
                               <Box>
-                                <Typography variant="body2" noWrap>{step.name}</Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Typography variant="body2" noWrap>{step.name}</Typography>
+                                  {job.isCurrentlyRunning && job.currentStep && job.currentStep.stepId === step.id && (
+                                    <Chip 
+                                      label="En cours" 
+                                      color="primary" 
+                                      size="small"
+                                      sx={{ animation: 'pulse 2s infinite', flexShrink: 0 }}
+                                    />
+                                  )}
+                                </Box>
                                 {ssisInfo && ssisInfo.params.length > 0 && (
                                   <Box sx={{ mt: 0.5, ml: 1 }}>
                                     <Box component="ul" sx={{ pl: 2, mb: 0 }}>
@@ -619,21 +839,20 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                             </Tooltip>
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2" noWrap>
-                              {step.subsystem}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2" noWrap color="primary">
-                              {ssisInfo && ssisInfo.packagePath ? ssisInfo.packagePath : ''}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={step.lastRunStatus} 
-                              color={STATUS_COLORS[step.lastRunStatus] || 'default'} 
-                              size="small"
-                            />
+                            {job.isCurrentlyRunning && job.currentStep && job.currentStep.stepId === step.id ? (
+                              <Chip 
+                                label="En cours" 
+                                color="primary" 
+                                size="small"
+                                sx={{ animation: 'pulse 2s infinite' }}
+                              />
+                            ) : (
+                              <Chip 
+                                label={step.lastRunStatus} 
+                                color={STATUS_COLORS[step.lastRunStatus] || 'default'} 
+                                size="small"
+                              />
+                            )}
                           </TableCell>
                           <TableCell>
                             <Typography variant="body2" noWrap>
@@ -653,15 +872,19 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                             </Tooltip>
                           </TableCell>
                           <TableCell>
-                            <Tooltip title="Voir les détails de l'étape" placement="top">
-                              <IconButton
-                                size="small"
-                                onClick={() => fetchStepDetails(step)}
-                                sx={{ p: 0.5 }}
-                              >
-                                <InfoIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
+                            <Button
+                              variant="outlined"
+                              size="small"
+                              onClick={() => fetchStepDetails(step)}
+                              sx={{ 
+                                fontSize: '0.75rem',
+                                py: 0.5,
+                                px: 1,
+                                minWidth: 'auto'
+                              }}
+                            >
+                              Détails et Logs
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -705,7 +928,7 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
               {/* Détails de la step et Historique côte à côte */}
               <Grid container spacing={2}>
                 {/* Détails de la step */}
-                <Grid item xs={12} md={6}>
+                <Grid item xs={12} md={5}>
                   <Accordion defaultExpanded sx={{ '& .MuiAccordionSummary-root': { backgroundColor: '#e8f5e8' } }}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                       <Box display="flex" alignItems="center">
@@ -750,30 +973,7 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                           <Typography variant="body2" color="textSecondary">Sous-système:</Typography>
                           <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.subsystem}</Typography>
                         </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Base de données:</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.databaseName || 'Non spécifiée'}</Typography>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Utilisateur:</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.databaseUserName || 'Non spécifié'}</Typography>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Tentatives de retry:</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.retryAttempts}</Typography>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Intervalle de retry (minutes):</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.retryInterval}</Typography>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Action en cas de succès:</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.onSuccessAction}</Typography>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <Typography variant="body2" color="textSecondary">Action en cas d'échec:</Typography>
-                          <Typography variant="body1" sx={{ mb: 1 }}>{stepDetails.step.onFailAction}</Typography>
-                        </Grid>
+
                         {stepDetails.step.outputFileName && (
                           <Grid item xs={12}>
                             <Typography variant="body2" color="textSecondary">Fichier de sortie:</Typography>
@@ -826,7 +1026,7 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                 </Grid>
 
                 {/* Historique */}
-                <Grid item xs={12} md={6}>
+                <Grid item xs={12} md={7}>
                   <Accordion defaultExpanded sx={{ '& .MuiAccordionSummary-root': { backgroundColor: '#f3e5f5' } }}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                       <Box display="flex" alignItems="center">
@@ -850,15 +1050,26 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                                </TableRow>
                              </TableHead>
                              <TableBody>
-                               {stepDetails.history.map((execution, index) => (
-                                 <TableRow key={index} sx={{ 
-                                   backgroundColor: index % 2 === 0 ? '#ffffff' : '#f9f9f9',
-                                   '&:hover': { backgroundColor: '#f0f8ff' },
-                                   ...(execution.runStatus === 'Échec' && {
-                                     backgroundColor: '#ffebee',
-                                     '&:hover': { backgroundColor: '#ffcdd2' }
-                                   })
-                                 }}>
+                               {stepDetails.history.map((execution, index) => {
+                                 const executionTime = `${execution.runDate}T${execution.runTime}`;
+                                 const isSelected = selectedExecution === executionTime;
+                                 
+                                 return (
+                                   <TableRow 
+                                     key={index} 
+                                     sx={{ 
+                                       backgroundColor: isSelected ? '#e3f2fd' : (index % 2 === 0 ? '#ffffff' : '#f9f9f9'),
+                                       '&:hover': { backgroundColor: isSelected ? '#e3f2fd' : '#f0f8ff', cursor: 'pointer' },
+                                       borderLeft: isSelected ? '4px solid #1976d2' : 'none',
+                                       ...(execution.runStatus === 'Échec' && {
+                                         backgroundColor: isSelected ? '#ffebee' : '#ffebee',
+                                         '&:hover': { backgroundColor: isSelected ? '#ffebee' : '#ffcdd2' }
+                                       })
+                                     }}
+                                     onClick={() => {
+                                       fetchCombinedLogs(selectedStep.id, executionTime);
+                                     }}
+                                   >
                                    <TableCell>{execution.runDate}</TableCell>
                                    <TableCell>{execution.runTime}</TableCell>
                                    <TableCell>{execution.runDuration}</TableCell>
@@ -887,47 +1098,144 @@ function Row({ job, connectionName, onJobAction, showServerColumn }) {
                                      </Tooltip>
                                    </TableCell>
                                  </TableRow>
-                               ))}
+                               );
+                             })}
                              </TableBody>
                                                       </Table>
                            
-                           {/* Section des échecs récents */}
-                           {stepDetails.history.filter(e => e.runStatus === 'Échec').length > 0 && (
-                             <Box sx={{ mt: 2, p: 2, backgroundColor: '#ffebee', borderRadius: 1, border: '1px solid #ffcdd2' }}>
-                               <Typography variant="subtitle2" sx={{ fontWeight: 'bold', color: '#d32f2f', mb: 1 }}>
-                                 ⚠️ Échecs récents
-                               </Typography>
-                               {stepDetails.history
-                                 .filter(execution => execution.runStatus === 'Échec')
-                                 .slice(0, 3) // Limiter à 3 échecs récents
-                                 .map((execution, index) => (
-                                   <Box key={index} sx={{ mb: 1, p: 1, backgroundColor: '#fff', borderRadius: 1 }}>
-                                     <Typography variant="caption" color="textSecondary">
-                                       {execution.runDate} {execution.runTime} - Durée: {execution.runDuration}
-                                     </Typography>
-                                     {execution.message && (
-                                       <Typography variant="body2" sx={{ mt: 0.5, color: '#d32f2f', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                         {execution.message}
-                                       </Typography>
-                                     )}
-                                   </Box>
-                                 ))}
+                           {/* Section des logs du catalogue d'intégration */}
+                           {/* Section des logs combinés */}
+                           <Box sx={{ mt: 2, p: 2, backgroundColor: '#f5f5f5', borderRadius: 1, border: '1px solid #e0e0e0' }}>
+                             <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                               <Box>
+                                 <Box display="flex" alignItems="center" gap={1}>
+                                   <Typography variant="subtitle2" sx={{ fontWeight: 'bold', color: '#1976d2' }}>
+                                     📋 Logs
+                                   </Typography>
+                                   {loadingLogs && !logsInitialized && (
+                                     <CircularProgress size={16} />
+                                   )}
+                                 </Box>
+                                 {selectedExecution && (
+                                   <Typography variant="caption" sx={{ color: '#1976d2', fontStyle: 'italic', display: 'block', mt: 0.5 }}>
+                                     Exécution sélectionnée: {formatExecutionTime(selectedExecution)}
+                                   </Typography>
+                                 )}
+                               </Box>
+                               <Button
+                                 size="small"
+                                 variant="outlined"
+                                 onClick={() => fetchCombinedLogs(selectedStep.id, selectedExecution)}
+                                 disabled={loadingLogs}
+                                 startIcon={loadingLogs ? <CircularProgress size={16} /> : <AutorenewIcon />}
+                               >
+                                 Actualiser
+                               </Button>
                              </Box>
-                           )}
-                           
-                           <Box display="flex" justifyContent="center" mt={2}>
-                             <Button 
-                               variant="outlined" 
-                               color="primary"
-                               startIcon={<HistoryIcon />}
-                               onClick={() => {
-                                 // TODO: Implémenter la vue complète de l'historique
-                                 alert('Fonctionnalité "Voir plus" à implémenter');
-                               }}
-                             >
-                               Voir plus d'historique
-                             </Button>
+                             {loadingLogs ? (
+                               <Box display="flex" flexDirection="column" alignItems="center" p={2} gap={1}>
+                                 <CircularProgress size={24} />
+                                 <Typography variant="body2" color="textSecondary">
+                                   Chargement des logs...
+                                 </Typography>
+                               </Box>
+                             ) : logsError ? (
+                               <Alert severity="warning" sx={{ mt: 1 }}>
+                                 {logsError}
+                               </Alert>
+                             ) : logsInitialized && logs.length > 0 ? (
+                               <>
+                                 <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
+                                   {logs.map((log, index) => (
+                                     <Box key={index} sx={{ 
+                                       mb: 1, 
+                                       p: 1, 
+                                       backgroundColor: log.isError ? '#ffebee' : log.isWarning ? '#fff3e0' : '#fff',
+                                       borderRadius: 1, 
+                                       border: log.isError ? '2px solid #f44336' : log.isWarning ? '2px solid #ff9800' : '1px solid #e0e0e0',
+                                       borderLeft: log.isError ? '4px solid #f44336' : log.isWarning ? '4px solid #ff9800' : '1px solid #e0e0e0'
+                                     }}>
+                                       <Box display="flex" justifyContent="space-between" alignItems="center" mb={0.5}>
+                                         <Box display="flex" alignItems="center" gap={1}>
+                                           {log.isError && (
+                                             <ErrorIcon color="error" sx={{ fontSize: 16 }} />
+                                           )}
+                                           {log.isWarning && (
+                                             <AutorenewIcon color="warning" sx={{ fontSize: 16 }} />
+                                           )}
+                                           <Typography variant="caption" color="textSecondary">
+                                             {log.displayTime}
+                                           </Typography>
+                                           {log.source === 'catalog' && (
+                                             <Chip 
+                                               label="Catalogue"
+                                               size="small"
+                                               variant="outlined"
+                                               color="primary"
+                                               sx={{ fontSize: '0.6rem', height: 16 }}
+                                             />
+                                           )}
+                                           {log.source === 'job' && (
+                                             <Chip 
+                                               label="Job"
+                                               size="small"
+                                               variant="outlined"
+                                               color="success"
+                                               sx={{ fontSize: '0.6rem', height: 16 }}
+                                             />
+                                           )}
+                                         </Box>
+                                         <Chip 
+                                           label={log.displayType}
+                                           size="small"
+                                           color={log.isError ? 'error' : log.isWarning ? 'warning' : 'info'}
+                                           variant={log.isError ? 'filled' : 'outlined'}
+                                         />
+                                       </Box>
+                                       
+                                       {log.message && (
+                                         <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'pre-wrap' }}>
+                                           {log.message}
+                                         </Typography>
+                                       )}
+                                       
+                                       {/* Informations supplémentaires pour les logs du job */}
+                                       {log.source === 'job' && log.runDuration && (
+                                         <Typography variant="caption" color="info.main" sx={{ display: 'block', mt: 0.5 }}>
+                                           Durée: {log.runDuration}
+                                         </Typography>
+                                       )}
+                                       
+                                       {log.source === 'job' && log.retriesAttempted > 0 && (
+                                         <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
+                                           Tentatives de retry: {log.retriesAttempted}
+                                         </Typography>
+                                       )}
+                                     </Box>
+                                   ))}
+                                 </Box>
+                                 
+                                 {/* Bouton "Voir plus" pour charger plus de logs */}
+                                 <Box display="flex" justifyContent="center" mt={2}>
+                                   <Button 
+                                     variant="outlined" 
+                                     color="primary"
+                                     size="small"
+                                     onClick={() => fetchCombinedLogs(selectedStep.id, selectedExecution, true)}
+                                     disabled={loadingLogs}
+                                     startIcon={loadingLogs ? <CircularProgress size={16} /> : <ExpandMoreIcon />}
+                                   >
+                                     Voir plus de logs (±30 min)
+                                   </Button>
+                                 </Box>
+                               </>
+                             ) : logsInitialized ? (
+                               <Typography variant="body2" color="textSecondary" sx={{ fontStyle: 'italic' }}>
+                                 Aucun log trouvé
+                               </Typography>
+                             ) : null}
                            </Box>
+
                         </>
                       )}
                     </AccordionDetails>
@@ -1005,12 +1313,15 @@ const SqlJobs = () => {
   const [filterRunning, setFilterRunning] = useState(false);
   const [search, setSearch] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false); // Désactivé par défaut
+  const [refreshInterval, setRefreshInterval] = useState(30); // 30 secondes par défaut
   const [hasLoaded, setHasLoaded] = useState(false); // Pour savoir si la liste a déjà été chargée
   const intervalRef = useRef(null);
+  const fetchJobsRef = useRef(null);
+  const refreshIntervalRef = useRef(30);
 
   const fetchConnections = async () => {
     try {
-      const response = await connectionsAPI.getActive();
+      const response = await connectionsAPI.getActiveConnections();
       const connectionsMap = {};
       response.data.forEach(conn => {
         connectionsMap[conn.id] = conn;
@@ -1021,10 +1332,10 @@ const SqlJobs = () => {
     }
   };
 
-  const fetchJobs = async () => {
-    if (!loading) setRefreshing(true);
+  const fetchJobs = useCallback(async () => {
+    setRefreshing(true);
     setError(null);
-    setLoading(true); // Ajouté pour afficher le loader lors du premier chargement
+    setLoading(true);
     try {
       const response = await jobsAPI.getAll();
       const allJobs = [];
@@ -1039,8 +1350,8 @@ const SqlJobs = () => {
           });
       });
       setJobs(allJobs);
-      setHasLoaded(true); // On note que la liste a été chargée au moins une fois
-      setHasInitialData(true); // On note que des données ont été chargées
+      setHasLoaded(true);
+      setHasInitialData(true);
     } catch (err) {
       console.error('Erreur lors du chargement des jobs:', err);
       let errorMessage = 'Erreur lors du chargement des jobs SQL';
@@ -1054,7 +1365,10 @@ const SqlJobs = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, []);
+
+  // Stocker fetchJobs dans une ref pour éviter les re-renders
+  fetchJobsRef.current = fetchJobs;
 
   // Gestion du rafraîchissement automatique
   useEffect(() => {
@@ -1063,11 +1377,19 @@ const SqlJobs = () => {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    // Configuration du nouveau rafraîchissement si activé ET si la liste a déjà été chargée
-    if (autoRefresh && hasLoaded) {
-      intervalRef.current = setInterval(fetchJobs, 30000);
-              logger.ui('Rafraîchissement automatique activé');
+    
+    // Configuration du nouveau rafraîchissement si activé
+    if (autoRefresh) {
+      // Si les données n'ont pas encore été chargées, les charger immédiatement
+      if (!hasLoaded) {
+        fetchJobsRef.current();
+      }
+      
+      // Configurer l'intervalle de rafraîchissement
+      intervalRef.current = setInterval(fetchJobsRef.current, refreshIntervalRef.current * 1000);
+      logger.ui('Rafraîchissement automatique activé');
     }
+    
     // Nettoyage lors du démontage du composant
     return () => {
       if (intervalRef.current) {
@@ -1076,6 +1398,21 @@ const SqlJobs = () => {
       }
     };
   }, [autoRefresh, hasLoaded]);
+
+  // Handlers optimisés
+  const handleAutoRefreshChange = useCallback((e) => {
+    setAutoRefresh(e.target.checked);
+  }, []);
+
+  const handleRefreshIntervalChange = useCallback((e) => {
+    const value = e.target.value;
+    setRefreshInterval(value);
+    // Mettre à jour la ref pour le prochain rafraîchissement
+    const numValue = parseInt(value);
+    if (!isNaN(numValue) && numValue >= 5 && numValue <= 300) {
+      refreshIntervalRef.current = numValue;
+    }
+  }, []);
 
   // Chargement initial des connexions uniquement
   useEffect(() => {
@@ -1201,38 +1538,53 @@ const SqlJobs = () => {
             background: white;
             border-radius: 50%;
           }
+
         `}
       </style>
       <Box display="flex" alignItems="center" mb={2}>
         <Box display="flex" alignItems="center" style={{ flexGrow: 1 }}>
-          <Box className="sql-server-icon">
-            <SqlServerIcon className="background-icon" />
-            <TimerIcon className="overlay-icon" />
+          <Box display="flex" alignItems="center" gap={1}>
+            <TimerIcon sx={{ fontSize: 32, color: 'primary.main' }} />
+            <Typography variant="h5" component="h1">
+              SQL Jobs
+            </Typography>
           </Box>
-          <Typography variant="h4">SQL Jobs</Typography>
         </Box>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              color="primary"
+        <Box display="flex" alignItems="center" sx={{ mr: 2 }}>
+                      <FormControlLabel
+              control={
+                <Switch
+                  checked={autoRefresh}
+                  onChange={handleAutoRefreshChange}
+                  color="primary"
+                />
+              }
+            label={
+              <Box display="flex" alignItems="center">
+                <AutorenewIcon sx={{ mr: 0.5, fontSize: 20 }} />
+                Rafraîchissement auto
+              </Box>
+            }
+          />
+          {autoRefresh && (
+            <TextField
+              size="small"
+              type="number"
+              label="Intervalle (sec)"
+              value={refreshInterval}
+              onChange={handleRefreshIntervalChange}
+              sx={{ ml: 2, width: 120 }}
+              inputProps={{ min: 5, max: 300 }}
             />
-          }
-          label={
-            <Box display="flex" alignItems="center">
-              <AutorenewIcon sx={{ mr: 0.5, fontSize: 20 }} />
-              Rafraîchissement auto
-            </Box>
-          }
-          sx={{ mr: 2 }}
-        />
+          )}
+        </Box>
         {refreshing && (
           <CircularProgress 
             size={20} 
             sx={{ mr: 2 }}
           />
         )}
+
       </Box>
       
       {error ? (
@@ -1240,7 +1592,7 @@ const SqlJobs = () => {
           severity="error" 
           sx={{ mb: 3 }}
           action={
-            <Button color="inherit" size="small" onClick={fetchJobs}>
+            <Button color="inherit" size="small" onClick={fetchJobsRef.current}>
               Réessayer
             </Button>
           }
